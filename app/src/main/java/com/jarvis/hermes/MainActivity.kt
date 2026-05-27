@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.jarvis.hermes.databinding.ActivityMainBinding
+import com.jarvis.hermes.databinding.ActivitySettingsBinding
 import kotlinx.coroutines.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -27,6 +28,7 @@ import java.util.concurrent.TimeUnit
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var binding: ActivityMainBinding
+    private lateinit var settingsBinding: ActivitySettingsBinding
     private var speechRecognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
     private var hermesApi: HermesApi? = null
@@ -35,11 +37,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var state = State.IDLE
     private var isSpeaking = false
     private var isTtsReady = false
-    private var pendingText = ""
+    private var conversationActive = false
 
-    // Config — change these to point at your Hermes instance
-    private val hermesBaseUrl = "http://YOUR_HERMES_IP:8642"
-    private val apiKey = "YOUR_API_KEY"
+    // Config loaded from SharedPreferences
+    private var hermesBaseUrl = ""
+    private var apiKey = ""
 
     enum class State { IDLE, LISTENING, PROCESSING }
 
@@ -55,19 +57,62 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        loadSettings()
         hermesApi = HermesApi(hermesBaseUrl, apiKey)
         tts = TextToSpeech(this, this)
 
         binding.btnStart.setOnClickListener {
             when (state) {
-                State.IDLE -> startListening()
-                State.LISTENING -> stopListening()
-                State.PROCESSING -> stopListening()
+                State.IDLE -> startConversation()
+                State.LISTENING -> stopConversation()
+                State.PROCESSING -> stopConversation()
             }
+        }
+
+        binding.btnSettings.setOnClickListener {
+            showSettings()
         }
 
         updateUi()
         checkMicPermission()
+    }
+
+    private fun loadSettings() {
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        hermesBaseUrl = prefs.getString("hermes_url", "http://YOUR_TAILSCALE_IP:8642") ?: ""
+        apiKey = prefs.getString("api_key", "") ?: ""
+        if (hermesBaseUrl.isBlank()) hermesBaseUrl = "http://YOUR_TAILSCALE_IP:8642"
+    }
+
+    private fun showSettings() {
+        settingsBinding = ActivitySettingsBinding.inflate(layoutInflater)
+        setContentView(settingsBinding.root)
+
+        settingsBinding.inputHermesUrl.setText(hermesBaseUrl)
+        settingsBinding.inputApiKey.setText(apiKey)
+
+        settingsBinding.btnSave.setOnClickListener {
+            val url = settingsBinding.inputHermesUrl.text.toString().trim()
+            val key = settingsBinding.inputApiKey.text.toString().trim()
+            if (url.isNotBlank()) {
+                getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+                    .edit()
+                    .putString("hermes_url", url)
+                    .putString("api_key", key)
+                    .apply()
+                hermesBaseUrl = url
+                apiKey = key
+                hermesApi = HermesApi(hermesBaseUrl, apiKey)
+                Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
+                setContentView(binding.root)
+            } else {
+                Toast.makeText(this, "Hermes URL required", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        settingsBinding.btnCancel.setOnClickListener {
+            setContentView(binding.root)
+        }
     }
 
     private fun checkMicPermission() {
@@ -93,20 +138,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEndOfSpeech() {}
                 override fun onError(error: Int) {
-                    if (state == State.LISTENING) {
-                        // Don't restart on error — let user push again
-                        state = State.IDLE
-                        updateUi()
+                    if (conversationActive && state == State.LISTENING) {
+                        // On error or silence, re-start listening for continuous conversation
+                        restartListeningLoop()
                     }
                 }
                 override fun onResults(results: Bundle?) {
                     val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
-                    if (text.isNotBlank()) {
+                    if (text.isNotBlank() && conversationActive) {
                         binding.transcriptText.append("You: $text\n")
                         sendToHermes(text)
                     }
-                    state = State.IDLE
-                    updateUi()
                 }
                 override fun onPartialResults(partialResults: Bundle?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -114,31 +156,56 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun startListening() {
+    private fun startConversation() {
         if (speechRecognizer == null) {
             Toast.makeText(this, "Speech recognizer not ready", Toast.LENGTH_SHORT).show()
             return
         }
-        if (state == State.PROCESSING) {
-            Toast.makeText(this, "Wait for response", Toast.LENGTH_SHORT).show()
+        if (hermesBaseUrl.isBlank() || hermesBaseUrl == "http://YOUR_TAILSCALE_IP:8642") {
+            Toast.makeText(this, "Configure Hermes URL in Settings first", Toast.LENGTH_LONG).show()
+            showSettings()
             return
         }
 
+        conversationActive = true
         state = State.LISTENING
         updateUi()
-        binding.voiceLevel.progress = 0
+        restartListeningLoop()
 
+        // Greet user
+        speakChunk("Yes?")
+    }
+
+    private fun restartListeningLoop() {
+        if (!conversationActive || state == State.PROCESSING) return
+
+        // Small delay before restarting to avoid rapid re-triggering
+        scope.launch {
+            delay(300)
+            if (conversationActive && state != State.PROCESSING && !isSpeaking) {
+                runOnUiThread {
+                    state = State.LISTENING
+                    updateUi()
+                    binding.voiceLevel.progress = 0
+                    startListeningOnce()
+                }
+            }
+        }
+    }
+
+    private fun startListeningOnce() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 300L)
         }
         speechRecognizer?.startListening(intent)
     }
 
-    private fun stopListening() {
+    private fun stopConversation() {
+        conversationActive = false
         speechRecognizer?.stopListening()
         state = State.IDLE
         updateUi()
@@ -148,33 +215,32 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun sendToHermes(text: String) {
         state = State.PROCESSING
         updateUi()
-        pendingText = ""
 
         scope.launch {
             hermesApi?.sendMessageStream(text, object : HermesApi.StreamListener {
                 override fun onChunk(text: String) {
-                    pendingText += text
                     runOnUiThread {
                         binding.transcriptText.append(text)
-                        if (isTtsReady && !isSpeaking) {
-                            speakChunk(text)
-                        }
+                        if (isTtsReady) speakChunk(text)
                     }
                 }
                 override fun onComplete(fullText: String) {
                     runOnUiThread {
                         binding.transcriptText.append("\n")
-                        state = State.IDLE
+                        state = State.LISTENING
                         updateUi()
                         binding.voiceLevel.progress = 0
+                        // Auto-resume listening for next thing user says
+                        restartListeningLoop()
                     }
                 }
                 override fun onError(error: String) {
                     runOnUiThread {
-                        binding.transcriptText.append("\nError: $error\n")
-                        state = State.IDLE
+                        binding.transcriptText.append("Error: $error\n")
+                        state = State.LISTENING
                         updateUi()
                         binding.voiceLevel.progress = 0
+                        restartListeningLoop()
                     }
                 }
             })
@@ -192,13 +258,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             binding.voiceLevel.progress = 0
             binding.statusText.text = when (state) {
                 State.IDLE -> "Press Start to talk"
-                State.LISTENING -> "Listening..."
+                State.LISTENING -> if (conversationActive) "Listening..." else "Listening..."
                 State.PROCESSING -> "Thinking..."
             }
-            binding.btnStart.text = when (state) {
-                State.IDLE -> "Start"
-                State.LISTENING -> "Stop"
-                State.PROCESSING -> "Stop"
+            binding.btnStart.text = when {
+                conversationActive -> "End Conversation"
+                else -> "Start Conversation"
             }
         }
     }
@@ -210,11 +275,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 override fun onStart(utteranceId: String?) { isSpeaking = true }
                 override fun onDone(utteranceId: String?) {
                     isSpeaking = false
-                    if (state == State.IDLE) {
-                        runOnUiThread {
-                            binding.statusText.text = "Press Start to talk"
-                        }
-                    }
                 }
                 override fun onError(utteranceId: String?) { isSpeaking = false }
             })

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0D1117"
+    android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Settings"
+            android:textColor="#00D4FF"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Hermes Connection"
+            android:textColor="#8B949E"
+            android:textSize="13sp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp"/>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Hermes URL (Tailscale IP or LAN IP)"
+            android:textColorHint="#8B949E">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/inputHermesUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#E6EDF3"
+                android:fontFamily="monospace"
+                android:inputType="textUri"/>
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:hint="API Key (optional)"
+            android:textColorHint="#8B949E">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/inputApiKey"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#E6EDF3"
+                android:fontFamily="monospace"
+                android:inputType="textPassword"/>
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <Button
+            android:id="@+id/btnSave"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="24dp"
+            android:text="Save"
+            android:textColor="#0D1117"
+            android:textStyle="bold"
+            android:backgroundTint="#00D4FF"/>
+
+        <Button
+            android:id="@+id/btnCancel"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="12dp"
+            android:text="Cancel"
+            android:textColor="#E6EDF3"
+            android:backgroundTint="#21262D"/>
+
+    </LinearLayout>
+</ScrollView>

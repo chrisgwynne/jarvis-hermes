@@ -159,13 +159,13 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                 override fun onEndOfSpeech() {}
                 override fun onError(error: Int) {
                     if (conversationActive && state == State.LISTENING && !isPaused) {
-                        restartListeningLoop()
+                        restartListeningLoop(immediate = true)
                     }
                 }
                 override fun onResults(results: Bundle?) {
                     val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
                     if (text.isNotBlank()) handleRecognizedText(text)
-                    if (conversationActive && !isPaused) restartListeningLoop()
+                    if (conversationActive && !isPaused) restartListeningLoop(immediate = false)
                 }
                 override fun onPartialResults(partialResults: Bundle?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -180,15 +180,14 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             conversationActive && !isPaused && lower == "mic off" -> { pauseListening(); return }
             lower == "end conversation" -> { endConversation(); return }
             conversationActive && !isPaused -> {
-                // First, try to handle locally
+                // First, try to handle locally — instant, no network
                 val localResponse = LocalCommandClassifier.handle(this, text)
                 if (localResponse != null) {
-                    // Local command handled - speak the response
                     speakResponse(localResponse)
                     return
                 }
-                
-                // Not a local command - send to Hermes
+
+                // Not a local command — send to Hermes
                 userMessages.add(text)
                 jarvisBuilder.clear()
                 sendToHermes(text)
@@ -196,18 +195,13 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    /**
-     * Speak a local command response.
-     */
     private fun speakResponse(response: LocalResponse) {
         if (response.text.isNotBlank()) {
             speak(response.text, sync = true)
         }
-        
-        // After handling local command, continue listening
         state = if (isPaused) State.PAUSED else State.LISTENING
         updateNotification(if (isPaused) "Paused" else "Listening...")
-        if (!isPaused) restartListeningLoop()
+        if (!isPaused) restartListeningLoop(immediate = true)
     }
 
     private fun startConversation() {
@@ -219,6 +213,12 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         userMessages.clear()
         jarvisMessages.clear()
         jarvisBuilder.clear()
+
+        // Initialize Hermes conversation — primes connection + sends system prompt
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        val systemPrompt = prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault())
+            ?: SystemPromptBuilder.getDefault()
+        hermesApi?.initConversation(systemPrompt)
 
         getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
             .edit().putBoolean("conversation_active", true).apply()
@@ -233,7 +233,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         isPaused = false
         state = State.LISTENING
         speak("Yes?", sync = true)
-        restartListeningLoop()
+        restartListeningLoop(immediate = true)
         updateNotification("Listening...")
     }
 
@@ -250,7 +250,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         state = State.LISTENING
         speak("Mic on.", sync = true)
         updateNotification("Listening...")
-        restartListeningLoop()
+        restartListeningLoop(immediate = true)
     }
 
     private fun endConversation() {
@@ -264,6 +264,8 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             saveSession()
         }
 
+        hermesApi?.resetConversation()
+
         getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
             .edit().putBoolean("conversation_active", false).apply()
 
@@ -274,10 +276,15 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun restartListeningLoop() {
+    /**
+     * Restart listening. When immediate=true (post-command), jump straight in.
+     * When immediate=false (post-response), add small buffer so TTS finishes first.
+     */
+    private fun restartListeningLoop(immediate: Boolean) {
         if (!conversationActive || isPaused || state == State.PROCESSING || isSpeaking) return
         scope.launch {
-            delay(300)
+            val delayMs = if (immediate) 50L else 400L
+            delay(delayMs)
             if (conversationActive && !isPaused && state != State.PROCESSING) {
                 state = State.LISTENING
                 updateNotification("Listening...")
@@ -300,16 +307,8 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private fun sendToHermes(text: String) {
         state = State.PROCESSING
         updateNotification("Thinking...")
-        jarvisBuilder.clear()
 
-        // Get system prompt from preferences
-        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-        val systemPrompt = prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault())
-            ?: SystemPromptBuilder.getDefault()
-
-        // Build conversation history for context
-        val history = userMessages.zip(jarvisMessages)
-
+        // System prompt already sent in initConversation
         scope.launch {
             hermesApi?.sendMessageStream(
                 text,
@@ -319,21 +318,21 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                         if (isTtsReady) speak(text, sync = false)
                     }
                     override fun onComplete(fullText: String) {
-                        jarvisMessages.add(jarvisBuilder.toString())
+                        // Cache assistant message for next turn
+                        hermesApi?.cacheAssistantMessage(fullText)
+                        jarvisMessages.add(fullText)
                         state = if (isPaused) State.PAUSED else State.LISTENING
                         updateNotification(if (isPaused) "Paused" else "Listening...")
-                        if (!isPaused) restartListeningLoop()
+                        if (!isPaused) restartListeningLoop(immediate = false)
                     }
                     override fun onError(error: String) {
                         jarvisMessages.add("[Error: $error]")
                         speak("Connection error.", sync = true)
                         state = if (isPaused) State.PAUSED else State.LISTENING
                         updateNotification("Listening...")
-                        if (!isPaused) restartListeningLoop()
+                        if (!isPaused) restartListeningLoop(immediate = false)
                     }
-                },
-                systemPrompt = systemPrompt,
-                conversationHistory = history
+                }
             )
         }
     }
@@ -368,12 +367,12 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         val title = userMessages.first().take(40)
 
         val session = JSONObject().apply {
-            put("-id", UUID.randomUUID().toString())
-            put("-title", title)
-            put("-preview", preview)
-            put("-transcript", transcript)
-            put("-timestamp", System.currentTimeMillis())
-            put("-messageCount", count * 2)
+            put("id", UUID.randomUUID().toString())
+            put("title", title)
+            put("preview", preview)
+            put("transcript", transcript)
+            put("timestamp", System.currentTimeMillis())
+            put("messageCount", count * 2)
         }
 
         val sessionsJson = prefs.getString("sessions", "[]") ?: "[]"

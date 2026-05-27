@@ -23,7 +23,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    private var hermesBaseUrl = ""
+    private var hermesIp = ""
     private var apiKey = ""
     private var conversationActive = false
 
@@ -34,10 +34,6 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         val micGranted = results[Manifest.permission.RECORD_AUDIO] == true
-        val notifGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            results[Manifest.permission.POST_NOTIFICATIONS] == true
-        } else true
-
         if (!micGranted) {
             Toast.makeText(this, "Microphone permission required", Toast.LENGTH_LONG).show()
         }
@@ -56,8 +52,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadSettings() {
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-        hermesBaseUrl = prefs.getString("hermes_url", "") ?: ""
+        hermesIp = prefs.getString("hermes_ip", "") ?: ""
         apiKey = prefs.getString("api_key", "") ?: ""
+    }
+
+    private fun hermesBaseUrl(): String {
+        return if (hermesIp.isNotBlank()) "http://$hermesIp:8642" else ""
     }
 
     private fun setupUi() {
@@ -94,7 +94,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun testConnection() {
-        if (hermesBaseUrl.isBlank()) {
+        val url = hermesBaseUrl()
+        if (url.isBlank()) {
             connectionStatus = ConnectionStatus.UNKNOWN
             updateConnectionIndicator()
             return
@@ -107,7 +108,7 @@ class MainActivity : AppCompatActivity() {
                         .readTimeout(5, TimeUnit.SECONDS)
                         .build()
                     val request = Request.Builder()
-                        .url("$hermesBaseUrl/health")
+                        .url("$url/health")
                         .apply { if (apiKey.isNotBlank()) addHeader("Authorization", "Bearer $apiKey") }
                         .get()
                         .build()
@@ -135,27 +136,37 @@ class MainActivity : AppCompatActivity() {
         val settingsBinding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(settingsBinding.root)
 
-        settingsBinding.inputHermesUrl.setText(hermesBaseUrl)
+        // Only show IP part — port :8642 is pre-filled
+        settingsBinding.inputHermesIp.setText(hermesIp)
         settingsBinding.inputApiKey.setText(apiKey)
 
         settingsBinding.btnSave.setOnClickListener {
-            val url = settingsBinding.inputHermesUrl.text.toString().trim()
+            val ip = settingsBinding.inputHermesIp.text.toString().trim()
             val key = settingsBinding.inputApiKey.text.toString().trim()
-            if (url.isNotBlank()) {
-                getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-                    .edit()
-                    .putString("hermes_url", url)
-                    .putString("api_key", key)
-                    .apply()
-                hermesBaseUrl = url
-                apiKey = key
-                testConnection()
-                Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
-                setContentView(binding.root)
-                setupUi()
-            } else {
-                Toast.makeText(this, "Hermes URL required", Toast.LENGTH_SHORT).show()
+
+            if (ip.isBlank()) {
+                Toast.makeText(this, "Tailscale IP required", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
             }
+
+            // Validate IP format
+            if (!ip.matches(Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$")) && !ip.startsWith("100.")) {
+                Toast.makeText(this, "Enter a valid Tailscale IP (e.g. 100.x.x.x)", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
+
+            getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+                .edit()
+                .putString("hermes_ip", ip)
+                .putString("api_key", key)
+                .apply()
+
+            hermesIp = ip
+            apiKey = key
+            testConnection()
+            Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
+            setContentView(binding.root)
+            setupUi()
         }
 
         settingsBinding.btnCancel.setOnClickListener {
@@ -167,7 +178,6 @@ class MainActivity : AppCompatActivity() {
     private fun showSessions() {
         val sessionBinding = ActivitySessionBinding.inflate(layoutInflater)
         setContentView(sessionBinding.root)
-
         loadSessions(sessionBinding)
     }
 
@@ -192,7 +202,6 @@ class MainActivity : AppCompatActivity() {
         val adapter = SessionAdapter(this, sessions.reversed())
         binding.sessionList.adapter = adapter
         binding.sessionList.setOnItemClickListener { _, _, position, _ ->
-            // Show session detail or transcript
             val session = sessions.reversed()[position]
             Toast.makeText(this, session.preview.take(100), Toast.LENGTH_SHORT).show()
         }
@@ -216,7 +225,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUi() {
-        // Check if service is running
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
         conversationActive = prefs.getBoolean("conversation_active", false)
 

@@ -40,8 +40,8 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private val jarvisMessages = mutableListOf<String>()
     private val jarvisBuilder = StringBuilder()
 
-    // Config
-    private var hermesBaseUrl = ""
+    // Config — IP only, port :8642 is fixed
+    private var hermesIp = ""
     private var apiKey = ""
 
     private val serviceChannelId = "jarvis_hermes_service"
@@ -49,13 +49,17 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
     enum class State { IDLE, LISTENING, PROCESSING, PAUSED }
 
+    private fun hermesBaseUrl(): String {
+        return if (hermesIp.isNotBlank()) "http://$hermesIp:8642" else ""
+    }
+
     override fun onCreate() {
         super.onCreate()
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-        hermesBaseUrl = prefs.getString("hermes_url", "") ?: ""
+        hermesIp = prefs.getString("hermes_ip", "") ?: ""
         apiKey = prefs.getString("api_key", "") ?: ""
 
-        hermesApi = HermesApi(hermesBaseUrl, apiKey)
+        hermesApi = HermesApi(hermesBaseUrl(), apiKey)
         tts = TextToSpeech(this, this)
         initSpeechRecognizer()
 
@@ -313,7 +317,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
 
-        // Build transcript
         val lines = mutableListOf<String>()
         val count = minOf(userMessages.size, jarvisMessages.size)
         for (i in 0 until count) {
@@ -326,15 +329,14 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         val title = userMessages.first().take(40)
 
         val session = JSONObject().apply {
-            put("id", UUID.randomUUID().toString())
-            put("title", title)
-            put("preview", preview)
-            put("transcript", transcript)
-            put("timestamp", System.currentTimeMillis())
-            put("messageCount", count * 2)
+            put("-id", UUID.randomUUID().toString())
+            put("-title", title)
+            put("-preview", preview)
+            put("-transcript", transcript)
+            put("-timestamp", System.currentTimeMillis())
+            put("-messageCount", count * 2)
         }
 
-        // Load existing sessions
         val sessionsJson = prefs.getString("sessions", "[]") ?: "[]"
         val sessions = JSONArray()
         try {
@@ -344,7 +346,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
         sessions.put(0, session)
 
-        // Keep max 50 sessions
         val trimmed = JSONArray()
         for (i in 0 until minOf(sessions.length(), 50)) trimmed.put(sessions.get(i))
         prefs.edit().putString("sessions", trimmed.toString()).apply()

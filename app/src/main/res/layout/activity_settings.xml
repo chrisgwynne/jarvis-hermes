@@ -31,11 +31,14 @@
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Hermes URL (Tailscale IP or LAN IP)"
-            android:textColorHint="#8B949E">
+            android:hint="Tailscale IP"
+            android:textColorHint="#8B949E"
+            app:helperText="e.g. 100.x.x.x (port :8642 pre-filled)"
+            app:helperTextTextColor="#8B949E"
+            xmlns:app="http://schemas.android.com/apk/res-auto">
 
             <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/inputHermesUrl"
+                android:id="@+id/inputHermesIp"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:textColor="#E6EDF3"
@@ -43,11 +46,28 @@
                 android:inputType="textUri"/>
         </com.google.android.material.textfield.TextInputLayout>
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Port: 8642 (fixed)"
+            android:textColor="#8B949E"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="8dp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="API Key (optional)"
+            android:textColor="#8B949E"
+            android:textSize="13sp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp"/>
+
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:hint="API Key (optional)"
+            android:hint="Leave blank if no auth set"
             android:textColorHint="#8B949E">
 
             <com.google.android.material.textfield.TextInputEditText

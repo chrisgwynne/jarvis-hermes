@@ -5,4 +5,13 @@
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:navigationBarColor">@color/background</item>
     </style>
+
+    <style name="JarvisDarkDialog" parent="ThemeOverlay.MaterialComponents.Dialog.Alert">
+        <item name="android:background">#161B22</item>
+        <item name="android:textColor">#E6EDF3</item>
+        <item name="colorOnSurface">#E6EDF3</item>
+        <item name="colorSurface">#161B22</item>
+        <item name="android:textColorPrimary">#E6EDF3</item>
+        <item name="android:textColorSecondary">#8B949E</item>
+    </style>
 </resources>

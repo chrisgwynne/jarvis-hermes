@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">Jarvis Hermes</string>
     <string name="widget_description">Tap to start voice conversation</string>
+    <string name="notification_reader_description">Jarvis notification reader - reads incoming messages aloud when conversation is active</string>
 </resources>

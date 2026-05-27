@@ -1,18 +1,19 @@
 package com.jarvis.hermes
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.widget.SeekBar
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.jarvis.hermes.databinding.ActivityMainBinding
-import com.jarvis.hermes.databinding.ActivitySettingsBinding
-import com.jarvis.hermes.databinding.ActivitySessionBinding
 import com.jarvis.hermes.service.VoiceService
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
@@ -30,6 +31,18 @@ class MainActivity : AppCompatActivity() {
 
     enum class ConnectionStatus { CONNECTED, DISCONNECTED, UNKNOWN }
     private var connectionStatus = ConnectionStatus.UNKNOWN
+
+    private val batteryOptimizationReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == "android.intent.action.BATTERY_OPTIMIZATION_STATE_CHANGED") {
+                if (BatteryOptimizationHelper.isBatteryExempt(this@MainActivity)) {
+                    BatteryOptimizationHelper.setBatteryExempt(this@MainActivity, true)
+                    updateBatteryBanner()
+                    Toast.makeText(this@MainActivity, "Jarvis will stay alive in the background", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -49,6 +62,8 @@ class MainActivity : AppCompatActivity() {
         setupUi()
         checkPermissions()
         testConnection()
+        registerBatteryReceiver()
+        updateBatteryBanner()
     }
 
     private fun loadSettings() {
@@ -75,6 +90,12 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnSettings.setOnClickListener { showSettings() }
         binding.btnSessions.setOnClickListener { showSessions() }
+        binding.btnMemos.setOnClickListener { showMemos() }
+        binding.btnQuickPhrases.setOnClickListener { showQuickPhrases() }
+
+        binding.btnBatteryExempt.setOnClickListener {
+            BatteryOptimizationHelper.openBatteryOptimizationSettings(this, 1001)
+        }
 
         updateConnectionIndicator()
     }
@@ -143,118 +164,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSettings() {
-        val settingsBinding = ActivitySettingsBinding.inflate(layoutInflater)
-        setContentView(settingsBinding.root)
-
-        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-
-        // Load current values
-        settingsBinding.inputHermesIp.setText(hermesIp)
-        settingsBinding.inputApiKey.setText(apiKey)
-        settingsBinding.sliderSilenceDelay.value = prefs.getLong("silence_delay", 1500L).toFloat()
-        settingsBinding.switchOfflineStt.isChecked = prefs.getBoolean("use_offline_stt", true)
-        settingsBinding.switchWakeWord.isChecked = prefs.getBoolean("wake_word_mode", false)
-        settingsBinding.switchRespectDnd.isChecked = prefs.getBoolean("respect_dnd", true)
-
-        val wakePhrase = prefs.getString("wake_phrase", "okay jarvis") ?: "okay jarvis"
-        settingsBinding.inputWakePhrase.setText(wakePhrase)
-
-        // Update silence delay label
-        settingsBinding.sliderSilenceDelay.addOnChangeListener { _, value, _ ->
-            // Note: Slider doesn't have direct text, would need a separate TextView
-            // The layout has the text as a static label showing default
-        }
-
-        settingsBinding.btnSave.setOnClickListener {
-            val ip = settingsBinding.inputHermesIp.text.toString().trim()
-            val key = settingsBinding.inputApiKey.text.toString().trim()
-            val silenceDelayVal = settingsBinding.sliderSilenceDelay.value.toLong()
-            val useOffline = settingsBinding.switchOfflineStt.isChecked
-            val wakeWord = settingsBinding.switchWakeWord.isChecked
-            val respectDnd = settingsBinding.switchRespectDnd.isChecked
-            val wakePhraseText = settingsBinding.inputWakePhrase.text.toString().trim().ifBlank { "okay jarvis" }
-
-            if (ip.isBlank()) {
-                Toast.makeText(this, "Tailscale IP required", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-
-            if (!ip.matches(Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$")) && !ip.startsWith("100.")) {
-                Toast.makeText(this, "Enter a valid Tailscale IP (e.g. 100.x.x.x)", Toast.LENGTH_LONG).show()
-                return@setOnClickListener
-            }
-
-            prefs.edit()
-                .putString("hermes_ip", ip)
-                .putString("api_key", key)
-                .putLong("silence_delay", silenceDelayVal)
-                .putBoolean("use_offline_stt", useOffline)
-                .putBoolean("wake_word_mode", wakeWord)
-                .putBoolean("respect_dnd", respectDnd)
-                .putString("wake_phrase", wakePhraseText)
-                .apply()
-
-            hermesIp = ip
-            apiKey = key
-            testConnection()
-            Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
-            setContentView(binding.root)
-            setupUi()
-        }
-
-        settingsBinding.btnCancel.setOnClickListener {
-            setContentView(binding.root)
-            setupUi()
-        }
-
-        settingsBinding.btnResetPrompt.setOnClickListener {
-            val defaultPrompt = SystemPromptBuilder.getDefault()
-            settingsBinding.inputSystemPrompt.setText(defaultPrompt)
-            prefs.edit().putString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, defaultPrompt).apply()
-        }
+        startActivity(Intent(this, SettingsActivity::class.java))
     }
 
     private fun showSessions() {
-        val sessionBinding = ActivitySessionBinding.inflate(layoutInflater)
-        setContentView(sessionBinding.root)
-        loadSessions(sessionBinding)
+        startActivity(Intent(this, SessionsActivity::class.java))
     }
 
-    private fun loadSessions(binding: ActivitySessionBinding) {
-        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-        val sessionsJson = prefs.getString("sessions", "[]") ?: "[]"
-        val sessions = mutableListOf<Session>()
-        try {
-            val array = org.json.JSONArray(sessionsJson)
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                sessions.add(Session(
-                    id = obj.getString("id"),
-                    title = obj.getString("title"),
-                    preview = obj.getString("preview"),
-                    timestamp = obj.getLong("timestamp"),
-                    messageCount = obj.getInt("messageCount"),
-                    transcript = obj.getString("transcript")
-                ))
-            }
-        } catch (e: Exception) { /* ignore */ }
+    private fun showMemos() {
+        startActivity(Intent(this, MemoesActivity::class.java))
+    }
 
-        val adapter = SessionAdapter(this, sessions.reversed())
-        binding.sessionList.adapter = adapter
-        binding.sessionList.setOnItemClickListener { _, _, position, _ ->
-            val session = sessions.reversed()[position]
-            Toast.makeText(this, session.preview.take(100), Toast.LENGTH_SHORT).show()
-        }
+    private fun showQuickPhrases() {
+        startActivity(Intent(this, QuickPhrasesActivity::class.java))
+    }
 
-        binding.btnBack.setOnClickListener {
-            setContentView(binding.root)
-            setupUi()
-        }
-
-        binding.btnClearSessions.setOnClickListener {
-            prefs.edit().putString("sessions", "[]").apply()
-            loadSessions(binding)
-        }
+    private fun updateBatteryBanner() {
+        val isExempt = BatteryOptimizationHelper.isBatteryExempt(this)
+        binding.batteryBanner.visibility = if (isExempt) View.GONE else View.VISIBLE
     }
 
     override fun onResume() {
@@ -262,6 +189,7 @@ class MainActivity : AppCompatActivity() {
         loadSettings()
         testConnection()
         updateUi()
+        updateBatteryBanner()
     }
 
     private fun updateUi() {
@@ -273,17 +201,33 @@ class MainActivity : AppCompatActivity() {
         updateConnectionIndicator()
     }
 
+    private fun registerBatteryReceiver() {
+        val filter = IntentFilter("android.intent.action.BATTERY_OPTIMIZATION_STATE_CHANGED")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(batteryOptimizationReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(batteryOptimizationReceiver, filter)
+        }
+    }
+
     override fun onDestroy() {
         scope.cancel()
+        try {
+            unregisterReceiver(batteryOptimizationReceiver)
+        } catch (e: Exception) {
+            // Not registered
+        }
         super.onDestroy()
     }
-}
 
-data class Session(
-    val id: String,
-    val title: String,
-    val preview: String,
-    val timestamp: Long,
-    val messageCount: Int,
-    val transcript: String = ""
-)
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 1001) {
+            if (BatteryOptimizationHelper.isBatteryExempt(this)) {
+                BatteryOptimizationHelper.setBatteryExempt(this, true)
+                updateBatteryBanner()
+                Toast.makeText(this, "Jarvis will stay alive in the background", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+}

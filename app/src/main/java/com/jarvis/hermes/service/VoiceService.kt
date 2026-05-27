@@ -12,11 +12,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import com.jarvis.hermes.MainActivity
-import com.jarvis.hermes.HermesApi
-import com.jarvis.hermes.LocalCommandClassifier
-import com.jarvis.hermes.LocalResponse
-import com.jarvis.hermes.SystemPromptBuilder
+import com.jarvis.hermes.*
 import com.jarvis.hermes.widget.JarvisWidget
 import kotlinx.coroutines.*
 import org.json.JSONArray
@@ -52,6 +48,9 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private var wakePhrase = "okay jarvis"
     private var useOfflineStt = true
     private var respectDnd = true
+    private var readNotifications = false
+    private var callScreeningEnabled = true
+    private var bluetoothAutoEnabled = false
 
     // DND state
     private var isDndActive = false
@@ -60,6 +59,12 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     // Wake word state
     private var isInWakeWordListening = false
     private var continuousRecognizer: SpeechRecognizer? = null
+
+    // Notification polling
+    private var notificationPollJob: Job? = null
+
+    // Call screening state
+    private var pendingCallAnnouncement: String? = null
 
     private val serviceChannelId = "jarvis_hermes_service"
     private val notificationId = 1
@@ -86,6 +91,9 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         wakePhrase = prefs.getString("wake_phrase", "okay jarvis") ?: "okay jarvis"
         useOfflineStt = prefs.getBoolean("use_offline_stt", true)
         respectDnd = prefs.getBoolean("respect_dnd", true)
+        readNotifications = prefs.getBoolean("read_notifications", false)
+        callScreeningEnabled = prefs.getBoolean("call_screening_enabled", true)
+        bluetoothAutoEnabled = prefs.getBoolean("bluetooth_auto_enabled", false)
 
         hermesApi = HermesApi(hermesBaseUrl(), apiKey).apply {
             setContext(this@VoiceService)
@@ -99,12 +107,52 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         checkDndState()
         registerReceiver(dndReceiver, dndFilter)
 
+        // Initialize Bluetooth auto manager
+        BluetoothAutoManager.init(this)
+
+        // Initialize call screening helper
+        CallScreenHelper.init(this)
+
         acquireWakeLock()
         createNotificationChannel()
 
         // Pre-warm Hermes connection if wake word mode is on
         if (wakeWordMode && hermesIp.isNotBlank()) {
             hermesApi?.initConversation(prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault()) ?: "")
+        }
+
+        // Check battery optimization status
+        if (!BatteryOptimizationHelper.isBatteryExempt(this)) {
+            android.util.Log.w("VoiceService", "App is battery optimized - may be killed in background")
+        }
+
+        // Start notification polling if enabled
+        if (readNotifications) {
+            startNotificationPolling()
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            "START" -> startConversation()
+            "END" -> endConversation()
+            "PAUSE" -> pauseListening()
+            "RESUME" -> resumeListening()
+            "SETTINGS_UPDATED" -> reloadSettings()
+        }
+        return START_STICKY
+    }
+
+    private fun reloadSettings() {
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        readNotifications = prefs.getBoolean("read_notifications", false)
+        callScreeningEnabled = prefs.getBoolean("call_screening_enabled", true)
+        bluetoothAutoEnabled = prefs.getBoolean("bluetooth_auto_enabled", false)
+
+        if (readNotifications) {
+            startNotificationPolling()
+        } else {
+            stopNotificationPolling()
         }
     }
 
@@ -177,16 +225,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         JarvisWidget.broadcastStateUpdate(this)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            "START" -> startConversation()
-            "END" -> endConversation()
-            "PAUSE" -> pauseListening()
-            "RESUME" -> resumeListening()
-        }
-        return START_STICKY
-    }
-
     override fun onBind(intent: Intent?) = null
 
     private fun initSpeechRecognizer() {
@@ -208,7 +246,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             override fun onEndOfSpeech() {}
             override fun onError(error: Int) {
                 if (wakeWordCheck) {
-                    // In wake word mode, restart continuous listening
                     if (isInWakeWordListening) {
                         restartWakeWordListening()
                     }
@@ -263,7 +300,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, silenceDelay)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 300L)
-            // Keep listening continuously
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
         }
         continuousRecognizer?.startListening(intent)
@@ -287,7 +323,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private fun checkForWakePhrase(text: String) {
         val lower = text.lowercase().trim()
         if (lower.contains(wakePhrase.lowercase())) {
-            // Wake phrase detected
             isInWakeWordListening = false
             continuousRecognizer?.stopListening()
             speakResponseSafely("Yes?")
@@ -332,6 +367,44 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
     private fun handleRecognizedText(text: String) {
         val lower = text.lowercase().trim()
+
+        // Check for call screening commands first
+        if (callScreeningEnabled && CallScreenHelper.isCallActive(this)) {
+            when {
+                lower == "answer" || lower == "answer call" -> {
+                    CallScreenHelper.answerCall(this)
+                    speak("Call answered.", sync = true)
+                    return
+                }
+                lower == "reject" || lower == "reject call" || lower == "ignore call" -> {
+                    CallScreenHelper.rejectCall(this)
+                    speak("Call rejected.", sync = true)
+                    return
+                }
+                lower == "voicemail" -> {
+                    CallScreenHelper.sendToVoicemail(this)
+                    speak("Sent to voicemail.", sync = true)
+                    return
+                }
+            }
+        }
+
+        // Check quick phrases first
+        val expandedCommands = QuickPhraseManager.expandPhrase(this, text)
+        if (expandedCommands != null) {
+            // Execute each command in the macro
+            for (command in expandedCommands) {
+                val response = LocalCommandClassifier.handle(this, command)
+                if (response != null) {
+                    speak(response.text, sync = true)
+                } else {
+                    // Send to Hermes as a message
+                    sendToHermes(command)
+                }
+            }
+            return
+        }
+
         when {
             conversationActive && isPaused && lower == "mic on" -> { resumeListening(); return }
             conversationActive && !isPaused && lower == "mic off" -> { pauseListening(); return }
@@ -343,8 +416,22 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                 }
                 return
             }
+            // Voice memo commands
+            lower == "note this" || lower == "save that" || lower == "voice memo" ||
+            lower == "remember this" || lower == "memo" -> {
+                startVoiceMemo()
+                return
+            }
+            lower.startsWith("play my memos") || lower == "play memos" -> {
+                playMemos()
+                return
+            }
+            lower.startsWith("delete memo") -> {
+                deleteMemo(lower)
+                return
+            }
             conversationActive && !isPaused -> {
-                // First, try to handle locally — instant, no network
+                // First, try to handle locally
                 val localResponse = LocalCommandClassifier.handle(this, text)
                 if (localResponse != null) {
                     speakResponse(localResponse)
@@ -356,6 +443,61 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                 jarvisBuilder.clear()
                 sendToHermes(text)
             }
+        }
+    }
+
+    private fun startVoiceMemo() {
+        if (VoiceMemoManager.isCurrentlyRecording()) {
+            val memo = VoiceMemoManager.stopRecording(this)
+            if (memo != null) {
+                speak("Memo saved.", sync = true)
+            } else {
+                speak("Could not save memo.", sync = true)
+            }
+        } else {
+            if (VoiceMemoManager.startRecording(this)) {
+                speak("Recording. Say note this to stop.", sync = true)
+            } else {
+                speak("Could not start recording.", sync = true)
+            }
+        }
+    }
+
+    private fun playMemos() {
+        val memos = VoiceMemoManager.getMemos(this)
+        if (memos.isEmpty()) {
+            speak("No memos yet.", sync = true)
+            return
+        }
+
+        val recentMemos = memos.take(5)
+        val listText = recentMemos.mapIndexed { index, memo ->
+            "${index + 1}. ${VoiceMemoManager.formatTimestamp(memo.timestamp)}"
+        }.joinToString(", ")
+
+        speak("Your recent memos: $listText. Say play memo followed by a number.", sync = true)
+    }
+
+    private fun deleteMemo(text: String) {
+        // Extract number from "delete memo 1" or "delete memo number 2"
+        val match = Regex("(\\d+)").find(text)
+        if (match == null) {
+            speak("Tell me which memo to delete, like delete memo one.", sync = true)
+            return
+        }
+
+        val memoNum = match.groupValues[1].toIntOrNull() ?: return
+        val memos = VoiceMemoManager.getMemos(this)
+        if (memoNum < 1 || memoNum > memos.size) {
+            speak("Invalid memo number.", sync = true)
+            return
+        }
+
+        val memo = memos[memoNum - 1]
+        if (VoiceMemoManager.deleteMemo(this, memo.id)) {
+            speak("Memo deleted.", sync = true)
+        } else {
+            speak("Could not delete memo.", sync = true)
         }
     }
 
@@ -435,7 +577,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             delay(1000)
             stopForeground(STOP_FOREGROUND_REMOVE)
             if (returnToWakeWord && wakeWordMode) {
-                // Return to wake word listening instead of stopping
                 startWakeWordListening()
             } else {
                 stopSelf()
@@ -443,10 +584,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    /**
-     * Restart listening. When immediate=true (post-command), jump straight in.
-     * When immediate=false (post-response), add small buffer so TTS finishes first.
-     */
     private fun restartListeningLoop(immediate: Boolean) {
         if (!conversationActive || isPaused || state == State.PROCESSING || isSpeaking) return
         scope.launch {
@@ -475,7 +612,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         state = State.PROCESSING
         updateNotification("Thinking...")
 
-        // System prompt already sent in initConversation
         scope.launch {
             hermesApi?.sendMessageStream(
                 text,
@@ -508,12 +644,10 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
 
     private fun speakResponseSafely(text: String) {
         if (respectDnd && isDndActive) {
-            // Vibrate instead of speaking
             val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
             if (vibrator.hasVibrator()) {
                 vibrator.vibrate(200L)
             }
-            // Still show in notification
             updateNotification(text)
             return
         }
@@ -524,7 +658,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         if (!isTtsReady || text.isBlank()) return
 
         if (respectDnd && isDndActive) {
-            // Vibrate instead of speaking
             val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
             if (vibrator.hasVibrator()) {
                 vibrator.vibrate(200L)
@@ -540,6 +673,60 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             isSpeaking = false
         } else {
             tts?.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+        }
+    }
+
+    private fun startNotificationPolling() {
+        notificationPollJob?.cancel()
+        notificationPollJob = scope.launch {
+            while (true) {
+                delay(5000) // Poll every 5 seconds
+                if (conversationActive && readNotifications) {
+                    checkForNotifications()
+                }
+            }
+        }
+    }
+
+    private fun stopNotificationPolling() {
+        notificationPollJob?.cancel()
+        notificationPollJob = null
+    }
+
+    private fun checkForNotifications() {
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        val notificationData = prefs.getString("latest_notification", null) ?: return
+        val timestamp = prefs.getLong("notification_timestamp", 0L)
+
+        // Only process if recent (within last 10 seconds)
+        if (System.currentTimeMillis() - timestamp > 10000) return
+
+        val parts = notificationData.split("|", limit = 2)
+        if (parts.size != 2) return
+
+        val sender = parts[0]
+        val message = parts[1]
+
+        // Clear the notification
+        prefs.edit().remove("latest_notification").remove("notification_timestamp").apply()
+
+        // Speak the notification
+        speak("Notification from $sender: $message", sync = true)
+    }
+
+    private fun checkBluetoothAutoSpeak() {
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        val speakText = prefs.getString("bluetooth_auto_speak", null) ?: return
+
+        prefs.edit().remove("bluetooth_auto_speak").apply()
+        speak(speakText, sync = true)
+    }
+
+    private fun checkPendingCallAnnouncement() {
+        val announcement = CallScreenHelper.getPendingAnnouncement(this)
+        if (announcement != null && conversationActive) {
+            CallScreenHelper.clearPendingAnnouncement(this)
+            speak(announcement, sync = true)
         }
     }
 
@@ -605,7 +792,12 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         try {
             unregisterReceiver(dndReceiver)
-        } catch (e: Exception) { /* ignore if not registered */ }
+        } catch (e: Exception) { /* ignore */ }
+
+        BluetoothAutoManager.cleanup()
+        CallScreenHelper.cleanup()
+        stopNotificationPolling()
+
         speechRecognizer?.destroy()
         continuousRecognizer?.destroy()
         tts?.shutdown()

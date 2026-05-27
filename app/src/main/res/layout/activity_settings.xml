@@ -260,6 +260,154 @@
             android:fontFamily="monospace"
             android:layout_marginTop="4dp"/>
 
+        <!-- Read Notifications Toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="16dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Read notifications aloud"
+                android:textColor="#E6EDF3"
+                android:textSize="14sp"
+                android:fontFamily="monospace"/>
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switchReadNotifications"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="false"
+                app:thumbTint="#00D4FF"
+                app:trackTint="#30363D"/>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Speak incoming messages when conversation is active"
+            android:textColor="#6E7681"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="4dp"/>
+
+        <!-- Bluetooth-Aware Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Bluetooth"
+            android:textColor="#8B949E"
+            android:textSize="13sp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp"/>
+
+        <!-- Bluetooth Auto-Start Toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Auto-start on Bluetooth"
+                android:textColor="#E6EDF3"
+                android:textSize="14sp"
+                android:fontFamily="monospace"/>
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switchBluetoothAuto"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="false"
+                app:thumbTint="#00D4FF"
+                app:trackTint="#30363D"/>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Start conversation when car/headphones connect"
+            android:textColor="#6E7681"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="4dp"/>
+
+        <!-- Bluetooth Device Type Spinner -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="12dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Device type"
+                android:textColor="#E6EDF3"
+                android:textSize="14sp"
+                android:fontFamily="monospace"/>
+
+            <Spinner
+                android:id="@+id/spinnerBtDeviceType"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="#30363D"
+                android:popupBackground="#161B22"/>
+        </LinearLayout>
+
+        <!-- Call Screening Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Call Screening"
+            android:textColor="#8B949E"
+            android:textSize="13sp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp"/>
+
+        <!-- Call Screening Toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Call screening"
+                android:textColor="#E6EDF3"
+                android:textSize="14sp"
+                android:fontFamily="monospace"/>
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switchCallScreening"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                app:thumbTint="#00D4FF"
+                app:trackTint="#30363D"/>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Announce callers and handle answer/reject"
+            android:textColor="#6E7681"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="4dp"/>
+
         <!-- System Prompt Section -->
         <TextView
             android:layout_width="wrap_content"
@@ -299,11 +447,31 @@
             android:layout_marginTop="4dp"
             android:layout_marginBottom="16dp"/>
 
+        <!-- Quick Phrases Button -->
+        <Button
+            android:id="@+id/btnQuickPhrases"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="16dp"
+            android:text="Quick Phrases"
+            android:textColor="#E6EDF3"
+            android:backgroundTint="#21262D"/>
+
+        <!-- Keep Alive Button -->
+        <Button
+            android:id="@+id/btnKeepAlive"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="12dp"
+            android:text="Keep Alive (Battery)"
+            android:textColor="#E6EDF3"
+            android:backgroundTint="#21262D"/>
+
         <Button
             android:id="@+id/btnSave"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="24dp"
             android:text="Save"
             android:textColor="#0D1117"
             android:textStyle="bold"

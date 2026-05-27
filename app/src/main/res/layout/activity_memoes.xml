@@ -9,7 +9,7 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Sessions"
+        android:text="Voice Memos"
         android:textColor="#00D4FF"
         android:textSize="28sp"
         android:textStyle="bold"
@@ -19,7 +19,7 @@
         android:id="@+id/textCount"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="0 sessions"
+        android:text="0 memos"
         android:textColor="#8B949E"
         android:textSize="13sp"
         android:fontFamily="monospace"
@@ -29,7 +29,7 @@
         android:id="@+id/textEmpty"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="No sessions yet.\nStart a conversation to create one."
+        android:text="No memos yet.\nSay 'note this' to record one."
         android:textColor="#6E7681"
         android:textSize="14sp"
         android:fontFamily="monospace"
@@ -38,26 +38,17 @@
         android:visibility="gone"/>
 
     <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/recyclerSessions"
+        android:id="@+id/recyclerMemos"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:layout_marginTop="16dp"/>
 
     <Button
-        android:id="@+id/btnClearSessions"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:layout_marginTop="16dp"
-        android:text="Clear All"
-        android:textColor="#F85149"
-        android:backgroundTint="#30363D"/>
-
-    <Button
         android:id="@+id/btnBack"
         android:layout_width="match_parent"
         android:layout_height="48dp"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="16dp"
         android:text="Back"
         android:textColor="#E6EDF3"
         android:backgroundTint="#21262D"/>

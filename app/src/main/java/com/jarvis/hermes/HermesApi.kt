@@ -6,16 +6,101 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(300, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
     private val jsonMediaType = "application/json".toMediaType()
+
+    interface StreamListener {
+        fun onChunk(text: String)
+        fun onComplete(fullText: String)
+        fun onError(error: String)
+    }
+
+    fun sendMessageStream(message: String, listener: StreamListener) {
+        val payload = JSONObject().apply {
+            put("model", "hermes")
+            put("messages", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", message)
+                })
+            })
+            put("stream", true)
+        }
+
+        val request = Request.Builder()
+            .url("$baseUrl/v1/chat/completions")
+            .apply {
+                if (apiKey.isNotBlank()) addHeader("Authorization", "Bearer $apiKey")
+                addHeader("Accept", "text/event-stream")
+            }
+            .post(payload.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        client.newCall(request).enqueue(object : Callback() {
+            private val buffer = StringBuilder()
+            private val fullText = StringBuilder()
+
+            override fun onFailure(call: Call, e: IOException) {
+                listener.onError(e.message ?: "Connection failed")
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.body?.let { body ->
+                    val source = body.source()
+                    try {
+                        while (!source.exhausted()) {
+                            val line = source.readUtf8Line() ?: continue
+                            when {
+                                line.startsWith("data: ") -> {
+                                    val data = line.substring(6).trim()
+                                    if (data == "[DONE]") {
+                                        listener.onComplete(fullText.toString())
+                                        return
+                                    }
+                                    parseChunk(data)?.let { text ->
+                                        fullText.append(text)
+                                        listener.onChunk(text)
+                                    }
+                                }
+                                line.startsWith("event: ") -> {
+                                    // Could handle named events here
+                                }
+                                else -> {
+                                    // SSE comment or blank line — ignore
+                                }
+                            }
+                        }
+                        listener.onComplete(fullText.toString())
+                    } catch (e: Exception) {
+                        listener.onError(e.message ?: "Stream error")
+                    }
+                } ?: run {
+                    listener.onError("Empty response")
+                }
+            }
+        })
+    }
+
+    private fun parseChunk(data: String): String? {
+        return try {
+            val json = JSONObject(data)
+            val choices = json.optJSONArray("choices") ?: return null
+            val delta = choices.optJSONObject(0)?.optJSONObject("delta") ?: return null
+            val content = delta.optString("content")
+            content.ifBlank { null }
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     suspend fun sendMessage(message: String): String? {
         val payload = JSONObject().apply {

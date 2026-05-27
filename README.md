@@ -1,48 +1,70 @@
 # Jarvis Hermes
 
-Android voice app that talks to Hermes Agent via its OpenAI-compatible API. Push-to-talk, streams text responses, plays them back via Android TTS.
+Android voice app with wake word activation. Says "okay jarvis" and it permanently listens — no button pressing required.
 
-## What it does
+## How it works
 
-- Push the button to talk
-- Speech-to-text runs on-device (Android SpeechRecognizer — no cloud STT)
-- Text sent to Hermes via `/v1/chat/completions`
-- Response played back via Android TextToSpeech
+1. **Wake word** — say "okay jarvis" to activate. Phone shows 👂 and says "yes?"
+2. **Always listening** — after wake, Jarvis listens continuously until you stop talking
+3. **Streaming TTS** — text responses stream in real-time and are spoken back as they arrive
+4. **Interrupt** — tap screen or say something while Jarvis is talking to interrupt
 
 ## Setup
 
-### 1. Configure Hermes API Server
+### 1. Enable Hermes API Server
 
-```bash
-# In ~/.hermes/.env
+In `~/.hermes/.env`:
+```
 API_SERVER_HOST=0.0.0.0
 API_SERVER_PORT=8642
 API_SERVER_KEY=your-secret-key
+API_SERVER_CORS_ORIGINS=*
 ```
 
-Then restart the gateway:
+Then:
 ```bash
 hermes gateway restart
 ```
 
-### 2. Set your connection details
+### 2. Configure app
 
-In `app/src/main/java/com/jarvis/hermes/MainActivity.kt`, update:
+In `MainActivity.kt`:
 ```kotlin
-private val hermesBaseUrl = "http://YOUR_HERMES_IP:8642"
+private val hermesBaseUrl = "http://YOUR_MACHINE_IP:8642"
 private val apiKey = "YOUR_API_KEY"
+private val wakePhrase = "okay jarvis"  // change to whatever you want
 ```
 
-If on the same network, use the machine's LAN IP. For remote access, use Tailscale.
-
-### 3. Build
+### 3. Build and install
 
 ```bash
 ./gradlew assembleDebug
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Tailscale (recommended for remote access)
+## Architecture
+
+```
+Wake word detected → "yes?" TTS
+         ↓
+User speaks → Android STT → Hermes /v1/chat/completions (stream)
+         ↓                              ↓
+   Android TTS ← streaming text chunks ←
+         ↓
+   User hears response in real-time
+         ↓
+   Auto-resume listening after TTS completes
+```
+
+STT and TTS both run on-device. Only text goes to Hermes.
+
+## Wake word options
+
+- **Built-in Android SpeechRecognizer** — detects "okay jarvis" in partial results
+- Change `wakePhrase` in `MainActivity.kt` to any phrase
+- Wake word detection is done by checking partial results against the phrase
+
+## Remote access (Tailscale)
 
 Install Tailscale on the machine running Hermes:
 ```bash
@@ -50,18 +72,10 @@ curl -fsSL https://tailscale.com/install.sh | sh
 tailscale up
 ```
 
-Get your Tailscale IP and use that as `hermesBaseUrl` in the app.
-
-## Architecture
-
-```
-User speaks → Android STT (on-device) → Hermes /v1/chat/completions → Hermes responds → Android TTS (on-device) → User hears response
-```
-
-STT and TTS both run locally on the device. Only the text message goes to Hermes.
+Use your Tailscale IP as `hermesBaseUrl` in the app.
 
 ## Requirements
 
 - Android 8.0+ (API 26)
-- Hermes Agent running with API server enabled
-- Device on same network as Hermes (or connected via Tailscale)
+- Hermes Agent with API server enabled
+- Device on same network (or via Tailscale)

@@ -1,10 +1,10 @@
 package com.jarvis.hermes.service
 
 import android.app.*
-import android.content.Intent
+import android.content.*
 import android.content.pm.ServiceInfo
-import android.os.Build
-import android.os.PowerManager
+import android.media.AudioManager
+import android.os.*
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -17,6 +17,7 @@ import com.jarvis.hermes.HermesApi
 import com.jarvis.hermes.LocalCommandClassifier
 import com.jarvis.hermes.LocalResponse
 import com.jarvis.hermes.SystemPromptBuilder
+import com.jarvis.hermes.widget.JarvisWidget
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -43,14 +44,33 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private val jarvisMessages = mutableListOf<String>()
     private val jarvisBuilder = StringBuilder()
 
-    // Config — IP only, port :8642 is fixed
+    // Config
     private var hermesIp = ""
     private var apiKey = ""
+    private var silenceDelay = 1500L
+    private var wakeWordMode = false
+    private var wakePhrase = "okay jarvis"
+    private var useOfflineStt = true
+    private var respectDnd = true
+
+    // DND state
+    private var isDndActive = false
+    private val dndFilter = IntentFilter(NotificationManager.INTERRUPTION_FILTER_CHANGED_ACTION)
+
+    // Wake word state
+    private var isInWakeWordListening = false
+    private var continuousRecognizer: SpeechRecognizer? = null
 
     private val serviceChannelId = "jarvis_hermes_service"
     private val notificationId = 1
 
-    enum class State { IDLE, LISTENING, PROCESSING, PAUSED }
+    enum class State { IDLE, LISTENING, PROCESSING, PAUSED, WAKE_WORD }
+
+    private val dndReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            checkDndState()
+        }
+    }
 
     private fun hermesBaseUrl(): String {
         return if (hermesIp.isNotBlank()) "http://$hermesIp:8642" else ""
@@ -61,13 +81,36 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
         hermesIp = prefs.getString("hermes_ip", "") ?: ""
         apiKey = prefs.getString("api_key", "") ?: ""
+        silenceDelay = prefs.getLong("silence_delay", 1500L)
+        wakeWordMode = prefs.getBoolean("wake_word_mode", false)
+        wakePhrase = prefs.getString("wake_phrase", "okay jarvis") ?: "okay jarvis"
+        useOfflineStt = prefs.getBoolean("use_offline_stt", true)
+        respectDnd = prefs.getBoolean("respect_dnd", true)
 
-        hermesApi = HermesApi(hermesBaseUrl(), apiKey)
+        hermesApi = HermesApi(hermesBaseUrl(), apiKey).apply {
+            setContext(this@VoiceService)
+            setPrefsListener { state ->
+                prefs.edit().putString("connection_state", state).apply()
+                JarvisWidget.broadcastStateUpdate(this@VoiceService)
+            }
+        }
         tts = TextToSpeech(this, this)
         initSpeechRecognizer()
+        checkDndState()
+        registerReceiver(dndReceiver, dndFilter)
 
         acquireWakeLock()
         createNotificationChannel()
+
+        // Pre-warm Hermes connection if wake word mode is on
+        if (wakeWordMode && hermesIp.isNotBlank()) {
+            hermesApi?.initConversation(prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault()) ?: "")
+        }
+    }
+
+    private fun checkDndState() {
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        isDndActive = nm.currentInterruptionFilter == NotificationManager.INTERRUPTION_FILTER_NONE
     }
 
     private fun acquireWakeLock() {
@@ -131,6 +174,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         val notification = buildNotification(text)
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(notificationId, notification)
+        JarvisWidget.broadcastStateUpdate(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -151,26 +195,139 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             return
         }
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
-            setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onError(error: Int) {
-                    if (conversationActive && state == State.LISTENING && !isPaused) {
-                        restartListeningLoop(immediate = true)
+            setRecognitionListener(createRecognitionListener())
+        }
+    }
+
+    private fun createRecognitionListener(wakeWordCheck: Boolean = false): RecognitionListener {
+        return object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onError(error: Int) {
+                if (wakeWordCheck) {
+                    // In wake word mode, restart continuous listening
+                    if (isInWakeWordListening) {
+                        restartWakeWordListening()
+                    }
+                    return
+                }
+                if (conversationActive && state == State.LISTENING && !isPaused) {
+                    restartListeningLoop(immediate = true)
+                }
+            }
+            override fun onResults(results: Bundle?) {
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                if (text.isNotBlank()) {
+                    if (wakeWordCheck) {
+                        handleWakeWordResult(text)
+                    } else {
+                        handleRecognizedText(text)
                     }
                 }
-                override fun onResults(results: Bundle?) {
-                    val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
-                    if (text.isNotBlank()) handleRecognizedText(text)
-                    if (conversationActive && !isPaused) restartListeningLoop(immediate = false)
+                if (wakeWordCheck) {
+                    restartWakeWordListening()
+                } else if (conversationActive && !isPaused) {
+                    restartListeningLoop(immediate = false)
                 }
-                override fun onPartialResults(partialResults: Bundle?) {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
+            }
+            override fun onPartialResults(partialResults: Bundle?) {
+                if (wakeWordCheck) {
+                    val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                    if (text.isNotBlank()) {
+                        checkForWakePhrase(text)
+                    }
+                }
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) {}
         }
+    }
+
+    private fun startWakeWordListening() {
+        if (continuousRecognizer == null) {
+            continuousRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
+                setRecognitionListener(createRecognitionListener(wakeWordCheck = true))
+            }
+        }
+        isInWakeWordListening = true
+        state = State.WAKE_WORD
+
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        prefs.edit().putString("widget_state", "wake_word").apply()
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, silenceDelay)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 300L)
+            // Keep listening continuously
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+        }
+        continuousRecognizer?.startListening(intent)
+        updateNotification("Wake word mode — say \"$wakePhrase\"")
+        JarvisWidget.broadcastStateUpdate(this)
+    }
+
+    private fun restartWakeWordListening() {
+        if (!isInWakeWordListening) return
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, silenceDelay)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 300L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+        }
+        continuousRecognizer?.startListening(intent)
+    }
+
+    private fun checkForWakePhrase(text: String) {
+        val lower = text.lowercase().trim()
+        if (lower.contains(wakePhrase.lowercase())) {
+            // Wake phrase detected
+            isInWakeWordListening = false
+            continuousRecognizer?.stopListening()
+            speakResponseSafely("Yes?")
+            startConversationFromWakeWord()
+        }
+    }
+
+    private fun handleWakeWordResult(text: String) {
+        val lower = text.lowercase().trim()
+        if (lower.contains(wakePhrase.lowercase())) {
+            isInWakeWordListening = false
+            continuousRecognizer?.stopListening()
+            speakResponseSafely("Yes?")
+            startConversationFromWakeWord()
+        }
+    }
+
+    private fun startConversationFromWakeWord() {
+        userMessages.clear()
+        jarvisMessages.clear()
+        jarvisBuilder.clear()
+
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        val systemPrompt = prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault())
+            ?: SystemPromptBuilder.getDefault()
+        hermesApi?.initConversation(systemPrompt)
+
+        prefs.edit().putBoolean("conversation_active", true).apply()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(notificationId, buildNotification("Listening..."), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(notificationId, buildNotification("Listening..."))
+        }
+
+        conversationActive = true
+        isPaused = false
+        state = State.LISTENING
+        JarvisWidget.broadcastStateUpdate(this)
+        restartListeningLoop(immediate = true)
     }
 
     private fun handleRecognizedText(text: String) {
@@ -178,7 +335,14 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         when {
             conversationActive && isPaused && lower == "mic on" -> { resumeListening(); return }
             conversationActive && !isPaused && lower == "mic off" -> { pauseListening(); return }
-            lower == "end conversation" -> { endConversation(); return }
+            lower == "end conversation" -> {
+                if (wakeWordMode) {
+                    endConversation(returnToWakeWord = true)
+                } else {
+                    endConversation()
+                }
+                return
+            }
             conversationActive && !isPaused -> {
                 // First, try to handle locally — instant, no network
                 val localResponse = LocalCommandClassifier.handle(this, text)
@@ -214,14 +378,12 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         jarvisMessages.clear()
         jarvisBuilder.clear()
 
-        // Initialize Hermes conversation — primes connection + sends system prompt
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
         val systemPrompt = prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault())
             ?: SystemPromptBuilder.getDefault()
         hermesApi?.initConversation(systemPrompt)
 
-        getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-            .edit().putBoolean("conversation_active", true).apply()
+        prefs.edit().putBoolean("conversation_active", true).apply()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(notificationId, buildNotification("Starting..."), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
@@ -241,19 +403,19 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         isPaused = true
         state = State.PAUSED
         speechRecognizer?.stopListening()
-        speak("Mic off. Say mic on to resume.", sync = true)
+        speakResponseSafely("Mic off. Say mic on to resume.")
         updateNotification("Paused — say mic on")
     }
 
     private fun resumeListening() {
         isPaused = false
         state = State.LISTENING
-        speak("Mic on.", sync = true)
+        speakResponseSafely("Mic on.")
         updateNotification("Listening...")
         restartListeningLoop(immediate = true)
     }
 
-    private fun endConversation() {
+    private fun endConversation(returnToWakeWord: Boolean = false) {
         conversationActive = false
         isPaused = false
         speechRecognizer?.stopListening()
@@ -272,7 +434,12 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         scope.launch {
             delay(1000)
             stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            if (returnToWakeWord && wakeWordMode) {
+                // Return to wake word listening instead of stopping
+                startWakeWordListening()
+            } else {
+                stopSelf()
+            }
         }
     }
 
@@ -298,7 +465,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, silenceDelay)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 300L)
         }
         speechRecognizer?.startListening(intent)
@@ -318,7 +485,6 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                         if (isTtsReady) speak(text, sync = false)
                     }
                     override fun onComplete(fullText: String) {
-                        // Cache assistant message for next turn
                         hermesApi?.cacheAssistantMessage(fullText)
                         jarvisMessages.add(fullText)
                         state = if (isPaused) State.PAUSED else State.LISTENING
@@ -327,18 +493,45 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                     }
                     override fun onError(error: String) {
                         jarvisMessages.add("[Error: $error]")
-                        speak("Connection error.", sync = true)
+                        speakResponseSafely("Connection error.")
                         state = if (isPaused) State.PAUSED else State.LISTENING
                         updateNotification("Listening...")
                         if (!isPaused) restartListeningLoop(immediate = false)
+                    }
+                    override fun onReconnecting() {
+                        // Connection lost, will retry
                     }
                 }
             )
         }
     }
 
+    private fun speakResponseSafely(text: String) {
+        if (respectDnd && isDndActive) {
+            // Vibrate instead of speaking
+            val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
+            if (vibrator.hasVibrator()) {
+                vibrator.vibrate(200L)
+            }
+            // Still show in notification
+            updateNotification(text)
+            return
+        }
+        speak(text, sync = true)
+    }
+
     private fun speak(text: String, sync: Boolean = false) {
         if (!isTtsReady || text.isBlank()) return
+
+        if (respectDnd && isDndActive) {
+            // Vibrate instead of speaking
+            val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
+            if (vibrator.hasVibrator()) {
+                vibrator.vibrate(200L)
+            }
+            return
+        }
+
         isSpeaking = true
         val id = "utterance_${UUID.randomUUID()}"
         if (sync) {
@@ -401,11 +594,20 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                 override fun onError(utteranceId: String?) { isSpeaking = false }
             })
             isTtsReady = true
+
+            // If wake word mode is on, start listening immediately
+            if (wakeWordMode && hermesIp.isNotBlank()) {
+                startWakeWordListening()
+            }
         }
     }
 
     override fun onDestroy() {
+        try {
+            unregisterReceiver(dndReceiver)
+        } catch (e: Exception) { /* ignore if not registered */ }
         speechRecognizer?.destroy()
+        continuousRecognizer?.destroy()
         tts?.shutdown()
         wakeLock?.release()
         scope.cancel()

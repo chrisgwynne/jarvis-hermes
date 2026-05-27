@@ -40,4 +40,6 @@ dependencies {
     implementation("org.json/json:20231013")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("com.google.protobuf:protobuf-javalite:3.25.1")
+    // Vosk for offline STT (wake word and local commands)
+    implementation("org.vosk:android:0.3.47")
 }

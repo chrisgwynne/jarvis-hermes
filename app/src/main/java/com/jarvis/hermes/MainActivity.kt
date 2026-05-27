@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -100,6 +101,15 @@ class MainActivity : AppCompatActivity() {
             updateConnectionIndicator()
             return
         }
+
+        // Check SharedPreferences for connection state first
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        val savedState = prefs.getString("connection_state", "")
+        if (savedState == "reconnecting") {
+            connectionStatus = ConnectionStatus.DISCONNECTED
+            updateConnectionIndicator()
+        }
+
         scope.launch {
             val ok = withContext(Dispatchers.IO) {
                 try {
@@ -136,29 +146,52 @@ class MainActivity : AppCompatActivity() {
         val settingsBinding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(settingsBinding.root)
 
-        // Only show IP part — port :8642 is pre-filled
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+
+        // Load current values
         settingsBinding.inputHermesIp.setText(hermesIp)
         settingsBinding.inputApiKey.setText(apiKey)
+        settingsBinding.sliderSilenceDelay.value = prefs.getLong("silence_delay", 1500L).toFloat()
+        settingsBinding.switchOfflineStt.isChecked = prefs.getBoolean("use_offline_stt", true)
+        settingsBinding.switchWakeWord.isChecked = prefs.getBoolean("wake_word_mode", false)
+        settingsBinding.switchRespectDnd.isChecked = prefs.getBoolean("respect_dnd", true)
+
+        val wakePhrase = prefs.getString("wake_phrase", "okay jarvis") ?: "okay jarvis"
+        settingsBinding.inputWakePhrase.setText(wakePhrase)
+
+        // Update silence delay label
+        settingsBinding.sliderSilenceDelay.addOnChangeListener { _, value, _ ->
+            // Note: Slider doesn't have direct text, would need a separate TextView
+            // The layout has the text as a static label showing default
+        }
 
         settingsBinding.btnSave.setOnClickListener {
             val ip = settingsBinding.inputHermesIp.text.toString().trim()
             val key = settingsBinding.inputApiKey.text.toString().trim()
+            val silenceDelayVal = settingsBinding.sliderSilenceDelay.value.toLong()
+            val useOffline = settingsBinding.switchOfflineStt.isChecked
+            val wakeWord = settingsBinding.switchWakeWord.isChecked
+            val respectDnd = settingsBinding.switchRespectDnd.isChecked
+            val wakePhraseText = settingsBinding.inputWakePhrase.text.toString().trim().ifBlank { "okay jarvis" }
 
             if (ip.isBlank()) {
                 Toast.makeText(this, "Tailscale IP required", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
-            // Validate IP format
             if (!ip.matches(Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$")) && !ip.startsWith("100.")) {
                 Toast.makeText(this, "Enter a valid Tailscale IP (e.g. 100.x.x.x)", Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
 
-            getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-                .edit()
+            prefs.edit()
                 .putString("hermes_ip", ip)
                 .putString("api_key", key)
+                .putLong("silence_delay", silenceDelayVal)
+                .putBoolean("use_offline_stt", useOffline)
+                .putBoolean("wake_word_mode", wakeWord)
+                .putBoolean("respect_dnd", respectDnd)
+                .putString("wake_phrase", wakePhraseText)
                 .apply()
 
             hermesIp = ip
@@ -172,6 +205,12 @@ class MainActivity : AppCompatActivity() {
         settingsBinding.btnCancel.setOnClickListener {
             setContentView(binding.root)
             setupUi()
+        }
+
+        settingsBinding.btnResetPrompt.setOnClickListener {
+            val defaultPrompt = SystemPromptBuilder.getDefault()
+            settingsBinding.inputSystemPrompt.setText(defaultPrompt)
+            prefs.edit().putString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, defaultPrompt).apply()
         }
     }
 
@@ -194,7 +233,8 @@ class MainActivity : AppCompatActivity() {
                     title = obj.getString("title"),
                     preview = obj.getString("preview"),
                     timestamp = obj.getLong("timestamp"),
-                    messageCount = obj.getInt("messageCount")
+                    messageCount = obj.getInt("messageCount"),
+                    transcript = obj.getString("transcript")
                 ))
             }
         } catch (e: Exception) { /* ignore */ }
@@ -244,5 +284,6 @@ data class Session(
     val title: String,
     val preview: String,
     val timestamp: Long,
-    val messageCount: Int
+    val messageCount: Int,
+    val transcript: String = ""
 )

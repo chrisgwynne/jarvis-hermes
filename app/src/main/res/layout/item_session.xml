@@ -21,7 +21,7 @@
         android:ellipsize="end"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toStartOf="@id/sessionTime"
+        app:layout_constraintEnd_toStartOf="@+id/sessionTime"
         android:layout_marginEnd="12dp"/>
 
     <TextView
@@ -46,9 +46,9 @@
         android:maxLines="2"
         android:ellipsize="end"
         android:layout_marginTop="6dp"
-        app:layout_constraintTop_toBottomOf="@id/sessionTitle"
+        app:layout_constraintTop_toBottomOf="@+id/sessionTitle"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toStartOf="@id/sessionCount"
+        app:layout_constraintEnd_toStartOf="@+id/exportBtn"
         android:layout_marginEnd="12dp"/>
 
     <TextView
@@ -61,5 +61,18 @@
         android:fontFamily="monospace"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"/>
+
+    <ImageButton
+        android:id="@+id/exportBtn"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:background="#21262D"
+        android:src="@android:drawable/ic_menu_share"
+        android:scaleType="center"
+        android:contentDescription="Export session"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@+id/sessionCount"
+        android:layout_marginEnd="12dp"/>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

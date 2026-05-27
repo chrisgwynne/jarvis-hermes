@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#0D1117"
@@ -34,8 +35,7 @@
             android:hint="Tailscale IP"
             android:textColorHint="#8B949E"
             app:helperText="e.g. 100.x.x.x (port :8642 pre-filled)"
-            app:helperTextTextColor="#8B949E"
-            xmlns:app="http://schemas.android.com/apk/res-auto">
+            app:helperTextTextColor="#8B949E">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/inputHermesIp"
@@ -55,20 +55,12 @@
             android:fontFamily="monospace"
             android:layout_marginTop="8dp"/>
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="API Key (optional)"
-            android:textColor="#8B949E"
-            android:textSize="13sp"
-            android:layout_marginTop="24dp"
-            android:layout_marginBottom="8dp"/>
-
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="Leave blank if no auth set"
-            android:textColorHint="#8B949E">
+            android:textColorHint="#8B949E"
+            android:layout_marginTop="16dp">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/inputApiKey"
@@ -78,6 +70,195 @@
                 android:fontFamily="monospace"
                 android:inputType="textPassword"/>
         </com.google.android.material.textfield.TextInputLayout>
+
+        <!-- Voice Settings Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Voice Recognition"
+            android:textColor="#8B949E"
+            android:textSize="13sp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp"/>
+
+        <!-- Silence Detection Slider -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Silence detection: 1500ms"
+            android:textColor="#E6EDF3"
+            android:textSize="14sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="8dp"/>
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderSilenceDelay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="500"
+            android:valueTo="3000"
+            android:value="1500"
+            android:stepSize="100"
+            app:thumbColor="#00D4FF"
+            app:trackColorActive="#00D4FF"
+            app:trackColorInactive="#30363D"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="500ms"
+            android:textColor="#6E7681"
+            android:textSize="10sp"
+            android:fontFamily="monospace"/>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="3000ms"
+            android:textColor="#6E7681"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:layout_gravity="end"/>
+
+        <!-- Use Offline STT Toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="16dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Use offline STT (Vosk)"
+                android:textColor="#E6EDF3"
+                android:textSize="14sp"
+                android:fontFamily="monospace"/>
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switchOfflineStt"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                app:thumbTint="#00D4FF"
+                app:trackTint="#30363D"/>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Uses Vosk for wake word and local commands"
+            android:textColor="#6E7681"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="4dp"/>
+
+        <!-- Wake Word Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Wake Word"
+            android:textColor="#8B949E"
+            android:textSize="13sp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp"/>
+
+        <!-- Wake Word Mode Toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Wake word mode"
+                android:textColor="#E6EDF3"
+                android:textSize="14sp"
+                android:fontFamily="monospace"/>
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switchWakeWord"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="false"
+                app:thumbTint="#00D4FF"
+                app:trackTint="#30363D"/>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Listen for wake phrase instead of pressing Start"
+            android:textColor="#6E7681"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="4dp"/>
+
+        <!-- Wake Phrase Input -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Wake phrase (default: okay jarvis)"
+            android:textColorHint="#8B949E"
+            android:layout_marginTop="12dp">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/inputWakePhrase"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#E6EDF3"
+                android:fontFamily="monospace"
+                android:inputType="text"
+                android:text="okay jarvis"/>
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <!-- Do Not Disturb Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Notifications"
+            android:textColor="#8B949E"
+            android:textSize="13sp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp"/>
+
+        <!-- Respect DND Toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Respect Do Not Disturb"
+                android:textColor="#E6EDF3"
+                android:textSize="14sp"
+                android:fontFamily="monospace"/>
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/switchRespectDnd"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                app:thumbTint="#00D4FF"
+                app:trackTint="#30363D"/>
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Skip TTS and vibrate instead when DND is on"
+            android:textColor="#6E7681"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="4dp"/>
 
         <!-- System Prompt Section -->
         <TextView
@@ -89,22 +270,13 @@
             android:layout_marginTop="24dp"
             android:layout_marginBottom="8dp"/>
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Customize how Hermes knows about you"
-            android:textColor="#6E7681"
-            android:textSize="11sp"
-            android:layout_marginBottom="8dp"/>
-
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="Tell Hermes about yourself..."
             android:textColorHint="#8B949E"
             app:counterEnabled="true"
-            app:counterMaxLength="500"
-            xmlns:app="http://schemas.android.com/apk/res-auto">
+            app:counterMaxLength="500">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/inputSystemPrompt"
@@ -146,7 +318,6 @@
             android:textColor="#E6EDF3"
             android:backgroundTint="#21262D"/>
 
-        <!-- Reset to Default button -->
         <Button
             android:id="@+id/btnResetPrompt"
             android:layout_width="match_parent"

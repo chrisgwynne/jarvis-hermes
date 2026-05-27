@@ -1,5 +1,6 @@
 package com.jarvis.hermes
 
+import android.content.Context
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -8,9 +9,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Optimized Hermes API client.
+ * Optimized Hermes API client with auto-reconnect.
  *
  * Speed optimizations:
  * - HTTP/2 with connection pooling (reuses TCP connection across requests)
@@ -18,8 +20,16 @@ import java.util.concurrent.TimeUnit
  * - Lazy system prompt: only sent on first message of conversation
  * - Cached message history as pre-built JSONArray (no rebuilding every request)
  * - Chunk accumulation for TTS: speak in sentence chunks, not per-token fragments
+ *
+ * Auto-reconnect:
+ * - On error, retry after 2s, then 4s, then 8s, up to max 30s
+ * - Updates connection_state in SharedPreferences
+ * - Calls listener.onError to notify service
  */
 class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
+
+    private var context: Context? = null
+    private var prefsListener: ((String) -> Unit)? = null
 
     // Reusable connection pool — shared across all requests
     private val client = OkHttpClient.Builder()
@@ -37,10 +47,31 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
     private var lastAssistantMessage: String = ""
     private var messagesInitialized = false
 
+    // Retry state
+    private var retryCount = 0
+    private val isRetrying = AtomicBoolean(false)
+
     interface StreamListener {
         fun onChunk(text: String)
         fun onComplete(fullText: String)
         fun onError(error: String)
+        fun onReconnecting()
+    }
+
+    fun setContext(ctx: Context) {
+        context = ctx.applicationContext
+    }
+
+    fun setPrefsListener(listener: (String) -> Unit) {
+        prefsListener = listener
+    }
+
+    private fun updateConnectionState(state: String) {
+        prefsListener?.invoke(state)
+        context?.getSharedPreferences("jarvis_hermes", Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putString("connection_state", state)
+            ?.apply()
     }
 
     /**
@@ -60,6 +91,7 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
 
         // Pre-warm the connection
         prewarm()
+        updateConnectionState("connected")
     }
 
     /**
@@ -69,6 +101,8 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
         cachedMessagesJson = null
         lastAssistantMessage = ""
         messagesInitialized = false
+        retryCount = 0
+        isRetrying.set(false)
     }
 
     /**
@@ -132,17 +166,23 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
         client.newCall(request).enqueue(object : Callback() {
             // TTS chunk accumulation — speak in sentences, not tokens
             private val textBuffer = StringBuilder()
-            private val sentenceEnd = Regex("[.!?]\s+")
+            private val sentenceEnd = Regex("[.!?]\\s+")
             private val fullText = StringBuilder()
 
             override fun onFailure(call: Call, e: IOException) {
-                listener.onError(e.message ?: "Connection failed")
+                handleError(e.message ?: "Connection failed", listener)
             }
 
             override fun onResponse(call: Call, response: Response) {
+                if (!response.isSuccessful) {
+                    handleError("HTTP ${response.code}", listener)
+                    return
+                }
                 response.body?.let { body ->
                     val source = body.source()
                     try {
+                        updateConnectionState("connected")
+                        retryCount = 0
                         while (!source.exhausted()) {
                             val line = source.readUtf8Line() ?: continue
                             when {
@@ -173,11 +213,93 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
                         }
                         listener.onComplete(fullText.toString())
                     } catch (e: Exception) {
-                        listener.onError(e.message ?: "Stream error")
+                        handleError(e.message ?: "Stream error", listener)
                     }
                 } ?: run {
-                    listener.onError("Empty response")
+                    handleError("Empty response", listener)
                 }
+            }
+
+            private fun handleError(error: String, listener: StreamListener) {
+                val delay = calculateRetryDelay()
+                if (delay == null) {
+                    // Max retries reached, notify and continue retrying in background
+                    listener.onError(error)
+                    scheduleBackgroundRetry(error, listener)
+                    return
+                }
+
+                retryCount++
+                listener.onReconnecting()
+                updateConnectionState("reconnecting")
+
+                Thread {
+                    Thread.sleep(delay)
+                    if (!isRetrying.compareAndSet(false, true)) return@Thread
+                    try {
+                        // Retry the request
+                        sendMessageStream(
+                            cachedMessagesJson?.let { msgs ->
+                                // Get the last user message to retry
+                                val arr = msgs as JSONArray
+                                if (arr.length() > 0) {
+                                    val lastMsg = arr.getJSONObject(arr.length() - 1)
+                                    if (lastMsg.optString("role") == "user") {
+                                        lastMsg.getString("content")
+                                    } else null
+                                } else null
+                            } ?: message,
+                            listener,
+                            null,
+                            false
+                        )
+                    } finally {
+                        isRetrying.set(false)
+                    }
+                }.start()
+            }
+
+            private fun scheduleBackgroundRetry(originalError: String, listener: StreamListener) {
+                Thread {
+                    while (true) {
+                        Thread.sleep(10_000)
+                        if (!isRetrying.compareAndSet(false, true)) continue
+                        try {
+                            updateConnectionState("reconnecting")
+                            listener.onReconnecting()
+
+                            // Attempt reconnection
+                            val testRequest = Request.Builder()
+                                .url("$baseUrl/v1/models")
+                                .apply {
+                                    if (apiKey.isNotBlank()) addHeader("Authorization", "Bearer $apiKey")
+                                }
+                                .head()
+                                .build()
+                            val response = client.newCall(testRequest).execute()
+                            if (response.isSuccessful) {
+                                updateConnectionState("connected")
+                                retryCount = 0
+                                // Notify successful reconnect
+                                break
+                            }
+                        } catch (e: Exception) {
+                            // Still failing, will retry again
+                        } finally {
+                            isRetrying.set(false)
+                        }
+                    }
+                }.start()
+            }
+
+            private fun calculateRetryDelay(): Long? {
+                val baseDelay = when (retryCount) {
+                    0 -> 2_000L
+                    1 -> 4_000L
+                    2 -> 8_000L
+                    else -> return null // Max retries reached, use background retry
+                }
+                return minOf(baseDelay * (retryCount + 1), 30_000L)
             }
 
             /**

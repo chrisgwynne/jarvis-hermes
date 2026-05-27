@@ -1,26 +1,20 @@
 # Jarvis Hermes
 
-Android voice app for talking to Hermes Agent. Press Start, talk, respond, keep going. Sessions saved, mic on/off, connection status.
+Android foreground service voice app for talking to Hermes Agent. Starts a conversation, runs in background through app switches and screen locks. Mic on/off, sessions saved.
 
-## Features
+## How it works
 
-- **Always listening** — Start Conversation, talk, Jarvis responds, auto-resumes listening
-- **Mic on/off** — say "mic off" to pause listening (stays awake, says "Mic off"). Say "mic on" to resume
-- **End conversation** — say "end conversation" or press the button
-- **Sessions** — past conversations saved, viewable with timestamps and message counts
-- **Connection status** — dot indicator shows Hermes connected (blue) / disconnected (red) / unknown (grey)
-- **Streaming TTS** — responses spoken in real-time as chunks arrive
-- **Screen awake** — display stays on during conversation
-- **Settings** — configure Tailscale URL + API key, persisted across app restarts
+1. **Start** → foreground notification appears, says "Yes?"
+2. **Talk** → responses stream via TTS as they arrive
+3. **Mic Off/Resume** → via notification button or say "mic off" / "mic on"
+4. **End** → via notification button or say "end conversation"
+5. **Sessions** → saved automatically, viewable in Sessions tab
 
-## Voice Commands
-
-| Command | Action |
-|---------|--------|
-| `mic off` | Pause listening, stays in wake-ready state |
-| `mic on` | Resume listening |
-| `end conversation` | End session and save |
-| `settings` | Open settings page |
+Works through:
+- App switching
+- Screen lock
+- Backgrounding
+- Device sleep
 
 ## Setup
 
@@ -34,14 +28,12 @@ API_SERVER_KEY=your-secret-key
 API_SERVER_CORS_ORIGINS=*
 ```
 
-Then:
 ```bash
 hermes gateway restart
 ```
 
 ### 2. Get your Tailscale IP
 
-On the machine running Hermes:
 ```bash
 tailscale up
 ip addr show tailscale0 | grep inet
@@ -54,27 +46,46 @@ ip addr show tailscale0 | grep inet
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### 4. Configure the app
+### 4. Configure
 
-Open the app → tap Settings → enter your Tailscale URL (e.g. `http://100.x.x.x:8642`) and API key → Save
+Open the app → Settings → enter your Tailscale URL (e.g. `http://100.x.x.x:8642`) and API key → Save
+
+## Voice Commands
+
+| Command | Action |
+|---------|--------|
+| `mic off` | Pause listening, stays active in background |
+| `mic on` | Resume listening |
+| `end conversation` | End session and save |
+
+Or use the notification action buttons.
 
 ## Architecture
 
 ```
-User presses Start → Jarvis: "Yes?" → You talk
+User presses Start → Foreground notification starts
          ↓
-Android STT → Hermes /v1/chat/completions (SSE stream)
-         ↓                              ↓
-   Android TTS ← SSE chunks ← response ←
+VoiceService runs as STICKY foreground service
          ↓
-   Auto-resume listening
+User talks → Android STT → Hermes /v1/chat/completions (SSE)
+         ↓                         ↓
+   Notification actions ← SSE chunks ← response
          ↓
-User: "mic off" → Listening pauses → "Mic off. Say mic on to resume."
-User: "mic on" → Listening resumes
-User: "end conversation" → Session saved, returns to idle
+   Android TTS speaks chunks in real-time
+         ↓
+   Auto-resume listening after each response
+         ↓
+   Sessions saved to SharedPreferences on end
 ```
 
-STT and TTS run on-device. Only text goes to Hermes.
+STT and TTS on-device. Only text to Hermes.
+
+## Notification
+
+Shows "Listening...", "Thinking...", "Paused — say mic on" with:
+- **Mic Off** / **Resume** button
+- **End** button
+- Tap notification to return to app
 
 ## Requirements
 

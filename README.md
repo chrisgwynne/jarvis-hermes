@@ -1,13 +1,26 @@
 # Jarvis Hermes
 
-Android voice app — press Start Conversation, talk, Jarvis responds, keeps listening until you end it.
+Android voice app for talking to Hermes Agent. Press Start, talk, respond, keep going. Sessions saved, mic on/off, connection status.
 
-## How it works
+## Features
 
-1. **Settings** → enter your Tailscale URL (e.g. `http://100.x.x.x:8642`) and optional API key
-2. **Start Conversation** → press the button, Jarvis says "Yes?"
-3. **Always listening** → talk, Jarvis responds, listens again automatically
-4. **End Conversation** → press to stop
+- **Always listening** — Start Conversation, talk, Jarvis responds, auto-resumes listening
+- **Mic on/off** — say "mic off" to pause listening (stays awake, says "Mic off"). Say "mic on" to resume
+- **End conversation** — say "end conversation" or press the button
+- **Sessions** — past conversations saved, viewable with timestamps and message counts
+- **Connection status** — dot indicator shows Hermes connected (blue) / disconnected (red) / unknown (grey)
+- **Streaming TTS** — responses spoken in real-time as chunks arrive
+- **Screen awake** — display stays on during conversation
+- **Settings** — configure Tailscale URL + API key, persisted across app restarts
+
+## Voice Commands
+
+| Command | Action |
+|---------|--------|
+| `mic off` | Pause listening, stays in wake-ready state |
+| `mic on` | Resume listening |
+| `end conversation` | End session and save |
+| `settings` | Open settings page |
 
 ## Setup
 
@@ -34,8 +47,6 @@ tailscale up
 ip addr show tailscale0 | grep inet
 ```
 
-You'll get something like `100.x.x.x:8642`
-
 ### 3. Build and install
 
 ```bash
@@ -45,20 +56,22 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 ### 4. Configure the app
 
-Open the app → tap ⚙️ → enter your Tailscale URL and API key → Save
+Open the app → tap Settings → enter your Tailscale URL (e.g. `http://100.x.x.x:8642`) and API key → Save
 
 ## Architecture
 
 ```
-Start Conversation → Jarvis: "Yes?" → You talk
+User presses Start → Jarvis: "Yes?" → You talk
          ↓
-Android STT → Hermes /v1/chat/completions (stream)
+Android STT → Hermes /v1/chat/completions (SSE stream)
          ↓                              ↓
    Android TTS ← SSE chunks ← response ←
          ↓
    Auto-resume listening
          ↓
-   End Conversation → stops
+User: "mic off" → Listening pauses → "Mic off. Say mic on to resume."
+User: "mic on" → Listening resumes
+User: "end conversation" → Session saved, returns to idle
 ```
 
 STT and TTS run on-device. Only text goes to Hermes.

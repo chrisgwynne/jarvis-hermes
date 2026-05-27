@@ -32,21 +32,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var hermesApi: HermesApi? = null
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    private var state = State.SLEEPING
+    private var state = State.IDLE
     private var isSpeaking = false
     private var isTtsReady = false
     private var pendingText = ""
-    private var ttsStarted = false
 
     // Config — change these to point at your Hermes instance
     private val hermesBaseUrl = "http://YOUR_HERMES_IP:8642"
     private val apiKey = "YOUR_API_KEY"
 
-    // Wake word — change to whatever you want to use
-    private val wakePhrase = "okay jarvis"
-    private var lastPartial = ""
-
-    enum class State { SLEEPING, WAKE_DETECTED, LISTENING, PROCESSING, SPEAKING }
+    enum class State { IDLE, LISTENING, PROCESSING }
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -62,6 +57,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         hermesApi = HermesApi(hermesBaseUrl, apiKey)
         tts = TextToSpeech(this, this)
+
+        binding.btnStart.setOnClickListener {
+            when (state) {
+                State.IDLE -> startListening()
+                State.LISTENING -> stopListening()
+                State.PROCESSING -> stopListening()
+            }
+        }
 
         updateUi()
         checkMicPermission()
@@ -85,65 +88,61 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 override fun onReadyForSpeech(params: Bundle?) {}
                 override fun onBeginningOfSpeech() {}
                 override fun onRmsChanged(rmsdB: Float) {
-                    if (state == State.LISTENING) {
-                        binding.voiceLevel.progress = (rmsdB * 5 + 20).toInt().coerceIn(0, 100)
-                    }
+                    binding.voiceLevel.progress = (rmsdB * 5 + 20).toInt().coerceIn(0, 100)
                 }
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEndOfSpeech() {}
                 override fun onError(error: Int) {
-                    if (state == State.WAKE_DETECTED || state == State.LISTENING) {
-                        restartListening()
+                    if (state == State.LISTENING) {
+                        // Don't restart on error — let user push again
+                        state = State.IDLE
+                        updateUi()
                     }
                 }
                 override fun onResults(results: Bundle?) {
                     val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
-                    handleRecognizedText(text)
-                    restartListening()
-                }
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
-                    lastPartial = partial.lowercase()
-                    if (state == State.SLEEPING && wakePhrase in lastPartial) {
-                        runOnUiThread { wake() }
+                    if (text.isNotBlank()) {
+                        binding.transcriptText.append("You: $text\n")
+                        sendToHermes(text)
                     }
+                    state = State.IDLE
+                    updateUi()
                 }
+                override fun onPartialResults(partialResults: Bundle?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         }
-        startListening()
     }
 
-    private fun handleRecognizedText(text: String) {
-        if (text.isBlank()) return
-
-        when (state) {
-            State.SLEEPING -> {
-                if (wakePhrase in text.lowercase()) wake()
-            }
-            State.LISTENING -> {
-                binding.transcriptText.append("You: $text\n")
-                sendToHermes(text)
-            }
-            State.SPEAKING -> {
-                // If user interrupts while Jarvis is talking
-                tts?.stop()
-                binding.transcriptText.append("You: $text\n")
-                state = State.LISTENING
-                sendToHermes(text)
-            }
-            State.PROCESSING -> {
-                binding.transcriptText.append("You: $text\n")
-                // Queue it — we'll send after current response
-            }
-            else -> {}
+    private fun startListening() {
+        if (speechRecognizer == null) {
+            Toast.makeText(this, "Speech recognizer not ready", Toast.LENGTH_SHORT).show()
+            return
         }
+        if (state == State.PROCESSING) {
+            Toast.makeText(this, "Wait for response", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        state = State.LISTENING
+        updateUi()
+        binding.voiceLevel.progress = 0
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
+        }
+        speechRecognizer?.startListening(intent)
     }
 
-    private fun wake() {
-        state = State.WAKE_DETECTED
+    private fun stopListening() {
+        speechRecognizer?.stopListening()
+        state = State.IDLE
         updateUi()
-        tts?.speak("Yes?", TextToSpeech.QUEUE_ADD, null, "wake_confirm")
+        binding.voiceLevel.progress = 0
     }
 
     private fun sendToHermes(text: String) {
@@ -152,34 +151,33 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         pendingText = ""
 
         scope.launch {
-            val streamListener = object : HermesApi.StreamListener {
+            hermesApi?.sendMessageStream(text, object : HermesApi.StreamListener {
                 override fun onChunk(text: String) {
                     pendingText += text
                     runOnUiThread {
                         binding.transcriptText.append(text)
-                        // Stream to TTS immediately
                         if (isTtsReady && !isSpeaking) {
                             speakChunk(text)
                         }
                     }
                 }
                 override fun onComplete(fullText: String) {
-                    state = State.LISTENING
-                    updateUi()
-                    binding.voiceLevel.progress = 0
-                    restartListening()
+                    runOnUiThread {
+                        binding.transcriptText.append("\n")
+                        state = State.IDLE
+                        updateUi()
+                        binding.voiceLevel.progress = 0
+                    }
                 }
                 override fun onError(error: String) {
                     runOnUiThread {
-                        binding.transcriptText.append("Error: $error\n")
+                        binding.transcriptText.append("\nError: $error\n")
+                        state = State.IDLE
+                        updateUi()
+                        binding.voiceLevel.progress = 0
                     }
-                    state = State.LISTENING
-                    updateUi()
-                    restartListening()
                 }
-            }
-
-            hermesApi?.sendMessageStream(text, streamListener)
+            })
         }
     }
 
@@ -189,35 +187,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "chunk_${UUID.randomUUID()}")
     }
 
-    private fun restartListening() {
-        if (speechRecognizer == null || state == State.SLEEPING || state == State.SPEAKING) return
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 300L)
-        }
-        speechRecognizer?.startListening(intent)
-    }
-
     private fun updateUi() {
         runOnUiThread {
             binding.voiceLevel.progress = 0
             binding.statusText.text = when (state) {
-                State.SLEEPING -> "Say \"$wakePhrase\" to wake"
-                State.WAKE_DETECTED -> "Listening..."
+                State.IDLE -> "Press Start to talk"
                 State.LISTENING -> "Listening..."
                 State.PROCESSING -> "Thinking..."
-                State.SPEAKING -> "Speaking..."
             }
-            binding.wakeIndicator.text = when (state) {
-                State.SLEEPING -> "💤"
-                else -> "👂"
-            }
-            binding.wakeIndicator.textSize = when (state) {
-                State.SLEEPING -> 32f
-                else -> 48f
+            binding.btnStart.text = when (state) {
+                State.IDLE -> "Start"
+                State.LISTENING -> "Stop"
+                State.PROCESSING -> "Stop"
             }
         }
     }
@@ -229,19 +210,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 override fun onStart(utteranceId: String?) { isSpeaking = true }
                 override fun onDone(utteranceId: String?) {
                     isSpeaking = false
-                    // After TTS done, auto-resume listening if not SLEEPING
-                    if (state != State.SLEEPING && !isSpeaking) {
+                    if (state == State.IDLE) {
                         runOnUiThread {
-                            state = State.LISTENING
-                            updateUi()
-                            restartListening()
+                            binding.statusText.text = "Press Start to talk"
                         }
                     }
                 }
                 override fun onError(utteranceId: String?) { isSpeaking = false }
             })
             isTtsReady = true
-            binding.statusText.text = "Say \"$wakePhrase\" to wake"
+            binding.statusText.text = "Press Start to talk"
         } else {
             binding.statusText.text = "TTS init failed"
         }

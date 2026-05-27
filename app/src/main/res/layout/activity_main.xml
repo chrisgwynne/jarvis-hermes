@@ -24,23 +24,13 @@
         android:id="@+id/statusText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Initializing..."
+        android:text="Press Start to talk"
         android:textColor="#8B949E"
         android:textSize="13sp"
         android:fontFamily="monospace"
         app:layout_constraintTop_toBottomOf="@id/titleText"
         app:layout_constraintStart_toStartOf="parent"
         android:layout_marginTop="4dp"/>
-
-    <TextView
-        android:id="@+id/wakeIndicator"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="💤"
-        android:textSize="32sp"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp"/>
 
     <ScrollView
         android:id="@+id/transcriptScroll"
@@ -51,7 +41,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         android:layout_marginTop="24dp"
-        android:layout_marginBottom="16dp">
+        android:layout_marginBottom="24dp">
 
         <TextView
             android:id="@+id/transcriptText"
@@ -72,9 +62,23 @@
         android:max="100"
         android:progressTint="#00D4FF"
         android:progressBackgroundTint="#21262D"
+        app:layout_constraintBottom_toTopOf="@id/btnStart"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginBottom="24dp"/>
+
+    <Button
+        android:id="@+id/btnStart"
+        android:layout_width="160dp"
+        android:layout_height="160dp"
+        android:text="Start"
+        android:textColor="#0D1117"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:background="@drawable/btn_pushtotalk"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginBottom="40dp"/>
+        android:layout_marginBottom="32dp"/>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

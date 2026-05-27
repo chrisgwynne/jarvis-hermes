@@ -79,11 +79,59 @@
                 android:inputType="textPassword"/>
         </com.google.android.material.textfield.TextInputLayout>
 
+        <!-- System Prompt Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="System Prompt"
+            android:textColor="#8B949E"
+            android:textSize="13sp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Customize how Hermes knows about you"
+            android:textColor="#6E7681"
+            android:textSize="11sp"
+            android:layout_marginBottom="8dp"/>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Tell Hermes about yourself..."
+            android:textColorHint="#8B949E"
+            app:counterEnabled="true"
+            app:counterMaxLength="500"
+            xmlns:app="http://schemas.android.com/apk/res-auto">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/inputSystemPrompt"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#E6EDF3"
+                android:fontFamily="monospace"
+                android:inputType="textMultiLine"
+                android:minLines="3"
+                android:maxLength="500"
+                android:gravity="top"/>
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Default: You are talking to Chris through his Android phone..."
+            android:textColor="#6E7681"
+            android:textSize="10sp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="16dp"/>
+
         <Button
             android:id="@+id/btnSave"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="16dp"
             android:text="Save"
             android:textColor="#0D1117"
             android:textStyle="bold"
@@ -97,6 +145,17 @@
             android:text="Cancel"
             android:textColor="#E6EDF3"
             android:backgroundTint="#21262D"/>
+
+        <!-- Reset to Default button -->
+        <Button
+            android:id="@+id/btnResetPrompt"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="16dp"
+            android:text="Reset to Default"
+            android:textColor="#8B949E"
+            android:textSize="12sp"
+            android:backgroundTint="#30363D"/>
 
     </LinearLayout>
 </ScrollView>

@@ -14,6 +14,9 @@ import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.jarvis.hermes.MainActivity
 import com.jarvis.hermes.HermesApi
+import com.jarvis.hermes.LocalCommandClassifier
+import com.jarvis.hermes.LocalResponse
+import com.jarvis.hermes.SystemPromptBuilder
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -177,11 +180,34 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             conversationActive && !isPaused && lower == "mic off" -> { pauseListening(); return }
             lower == "end conversation" -> { endConversation(); return }
             conversationActive && !isPaused -> {
+                // First, try to handle locally
+                val localResponse = LocalCommandClassifier.handle(this, text)
+                if (localResponse != null) {
+                    // Local command handled - speak the response
+                    speakResponse(localResponse)
+                    return
+                }
+                
+                // Not a local command - send to Hermes
                 userMessages.add(text)
                 jarvisBuilder.clear()
                 sendToHermes(text)
             }
         }
+    }
+
+    /**
+     * Speak a local command response.
+     */
+    private fun speakResponse(response: LocalResponse) {
+        if (response.text.isNotBlank()) {
+            speak(response.text, sync = true)
+        }
+        
+        // After handling local command, continue listening
+        state = if (isPaused) State.PAUSED else State.LISTENING
+        updateNotification(if (isPaused) "Paused" else "Listening...")
+        if (!isPaused) restartListeningLoop()
     }
 
     private fun startConversation() {
@@ -276,26 +302,39 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         updateNotification("Thinking...")
         jarvisBuilder.clear()
 
+        // Get system prompt from preferences
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        val systemPrompt = prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault())
+            ?: SystemPromptBuilder.getDefault()
+
+        // Build conversation history for context
+        val history = userMessages.zip(jarvisMessages)
+
         scope.launch {
-            hermesApi?.sendMessageStream(text, object : HermesApi.StreamListener {
-                override fun onChunk(text: String) {
-                    jarvisBuilder.append(text)
-                    if (isTtsReady) speak(text, sync = false)
-                }
-                override fun onComplete(fullText: String) {
-                    jarvisMessages.add(jarvisBuilder.toString())
-                    state = if (isPaused) State.PAUSED else State.LISTENING
-                    updateNotification(if (isPaused) "Paused" else "Listening...")
-                    if (!isPaused) restartListeningLoop()
-                }
-                override fun onError(error: String) {
-                    jarvisMessages.add("[Error: $error]")
-                    speak("Connection error.", sync = true)
-                    state = if (isPaused) State.PAUSED else State.LISTENING
-                    updateNotification("Listening...")
-                    if (!isPaused) restartListeningLoop()
-                }
-            })
+            hermesApi?.sendMessageStream(
+                text,
+                object : HermesApi.StreamListener {
+                    override fun onChunk(text: String) {
+                        jarvisBuilder.append(text)
+                        if (isTtsReady) speak(text, sync = false)
+                    }
+                    override fun onComplete(fullText: String) {
+                        jarvisMessages.add(jarvisBuilder.toString())
+                        state = if (isPaused) State.PAUSED else State.LISTENING
+                        updateNotification(if (isPaused) "Paused" else "Listening...")
+                        if (!isPaused) restartListeningLoop()
+                    }
+                    override fun onError(error: String) {
+                        jarvisMessages.add("[Error: $error]")
+                        speak("Connection error.", sync = true)
+                        state = if (isPaused) State.PAUSED else State.LISTENING
+                        updateNotification("Listening...")
+                        if (!isPaused) restartListeningLoop()
+                    }
+                },
+                systemPrompt = systemPrompt,
+                conversationHistory = history
+            )
         }
     }
 

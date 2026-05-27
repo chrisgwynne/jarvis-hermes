@@ -24,15 +24,46 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
         fun onError(error: String)
     }
 
-    fun sendMessageStream(message: String, listener: StreamListener) {
+    /**
+     * Send message with full context including system prompt and conversation history.
+     */
+    fun sendMessageStream(
+        message: String,
+        listener: StreamListener,
+        systemPrompt: String? = null,
+        conversationHistory: List<Pair<String, String>> = emptyList()
+    ) {
+        val messages = JSONArray()
+
+        // Add system prompt if provided
+        if (!systemPrompt.isNullOrBlank()) {
+            messages.put(JSONObject().apply {
+                put("role", "system")
+                put("content", systemPrompt)
+            })
+        }
+
+        // Add conversation history
+        for ((userMsg, jarvisMsg) in conversationHistory.takeLast(10)) {
+            messages.put(JSONObject().apply {
+                put("role", "user")
+                put("content", userMsg)
+            })
+            messages.put(JSONObject().apply {
+                put("role", "assistant")
+                put("content", jarvisMsg)
+            })
+        }
+
+        // Add current message
+        messages.put(JSONObject().apply {
+            put("role", "user")
+            put("content", message)
+        })
+
         val payload = JSONObject().apply {
             put("model", "hermes")
-            put("messages", JSONArray().apply {
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", message)
-                })
-            })
+            put("messages", messages)
             put("stream", true)
         }
 
@@ -102,15 +133,42 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
         }
     }
 
-    suspend fun sendMessage(message: String): String? {
+    /**
+     * Send message with context (convenience method without streaming).
+     */
+    suspend fun sendMessage(
+        message: String,
+        systemPrompt: String? = null,
+        conversationHistory: List<Pair<String, String>> = emptyList()
+    ): String? {
+        val messages = JSONArray()
+
+        if (!systemPrompt.isNullOrBlank()) {
+            messages.put(JSONObject().apply {
+                put("role", "system")
+                put("content", systemPrompt)
+            })
+        }
+
+        for ((userMsg, jarvisMsg) in conversationHistory.takeLast(10)) {
+            messages.put(JSONObject().apply {
+                put("role", "user")
+                put("content", userMsg)
+            })
+            messages.put(JSONObject().apply {
+                put("role", "assistant")
+                put("content", jarvisMsg)
+            })
+        }
+
+        messages.put(JSONObject().apply {
+            put("role", "user")
+            put("content", message)
+        })
+
         val payload = JSONObject().apply {
             put("model", "hermes")
-            put("messages", JSONArray().apply {
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", message)
-                })
-            })
+            put("messages", messages)
             put("stream", false)
         }
 

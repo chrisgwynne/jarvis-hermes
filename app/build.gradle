@@ -15,7 +15,7 @@ android {
     }
     buildTypes {
         release {
-            isMinifyEnabled = false
+            minifyEnabled false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -47,5 +47,5 @@ dependencies {
     // Encrypted SharedPreferences for API keys + session transcripts.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     // Vosk for offline STT (wake word / local commands)
-    implementation("org.vosk:android:0.3.47")
+    implementation("com.alphacephei:vosk-android:0.3.47")
 }

@@ -2,8 +2,7 @@ package com.jarvis.hermes
 
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.os.Build
+import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
@@ -11,79 +10,44 @@ import androidx.appcompat.app.AppCompatActivity
 
 /**
  * Battery optimization whitelist helper.
- * Detects if app is battery-optimized and guides user to disable it.
+ *
+ * The status is read live from PowerManager, never cached, because the user
+ * can revoke the exemption at any time.
  */
 object BatteryOptimizationHelper {
 
-    private const val PREFS_NAME = "jarvis_hermes"
-    private const val KEY_BATTERY_EXEMPT = "battery_exempt"
-    private const val ACTION_BATTERY_OPTIMIZATION_CHANGED = "android.intent.action.BATTERY_OPTIMIZATION_STATE_CHANGED"
-
-    /**
-     * Check if the app is battery-exempt (ignoring battery optimization).
-     */
     fun isBatteryExempt(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        if (prefs.getBoolean(KEY_BATTERY_EXEMPT, false)) return true
-
-        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return false
         return pm.isIgnoringBatteryOptimizations(context.packageName)
     }
 
-    /**
-     * Save that battery exemption was granted.
-     */
-    fun setBatteryExempt(context: Context, exempt: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_BATTERY_EXEMPT, exempt)
-            .apply()
-    }
+    /** Kept as a no-op so existing call sites still compile; status is live. */
+    @Suppress("UNUSED_PARAMETER")
+    fun setBatteryExempt(context: Context, exempt: Boolean) { /* no-op */ }
+
+    fun isBatteryOptimized(context: Context): Boolean = !isBatteryExempt(context)
 
     /**
-     * Check if battery is currently optimized.
-     */
-    fun isBatteryOptimized(context: Context): Boolean {
-        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        return !pm.isIgnoringBatteryOptimizations(context.packageName)
-    }
-
-    /**
-     * Open battery optimization settings.
+     * Show the per-app battery optimization dialog.
      */
     fun openBatteryOptimizationSettings(activity: AppCompatActivity, requestCode: Int) {
         try {
-            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:${activity.packageName}")
+            }
             activity.startActivityForResult(intent, requestCode)
-        } catch (e: Exception) {
-            // Fallback to general battery settings
-            val intent = Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)
-            activity.startActivityForResult(intent, requestCode)
+        } catch (_: Exception) {
+            try {
+                activity.startActivityForResult(
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                    requestCode
+                )
+            } catch (_: Exception) {
+                Toast.makeText(activity, "Could not open battery settings", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
-    /**
-     * Register receiver for battery optimization state changes.
-     */
-    fun registerBatteryOptimizationReceiver(context: Context, receiver: android.content.BroadcastReceiver) {
-        val filter = IntentFilter(ACTION_BATTERY_OPTIMIZATION_CHANGED)
-        context.registerReceiver(receiver, filter)
-    }
-
-    /**
-     * Unregister receiver.
-     */
-    fun unregisterBatteryOptimizationReceiver(context: Context, receiver: android.content.BroadcastReceiver) {
-        try {
-            context.unregisterReceiver(receiver)
-        } catch (e: Exception) {
-            // Not registered
-        }
-    }
-
-    /**
-     * Show toast confirming battery exemption granted.
-     */
     fun showExemptionGrantedToast(context: Context) {
         Toast.makeText(context, "Jarvis will stay alive in the background", Toast.LENGTH_LONG).show()
     }

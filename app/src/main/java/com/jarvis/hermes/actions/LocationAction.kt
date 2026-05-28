@@ -4,19 +4,24 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Location
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
-import android.os.Looper
-import android.provider.Settings
 import androidx.core.content.ContextCompat
-import com.google.android.gms.location.*
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.tasks.Tasks
 import com.jarvis.hermes.LocalResponse
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Location action handler: where am I, share location, track.
+ * Location action handler.
+ *
+ *  - Fused provider used when available (Play Services).
+ *  - Falls back to LocationManager.getLastKnownLocation across all providers
+ *    on phones without Play Services.
+ *  - We block synchronously up to 5s; on a fresh boot lastLocation may be
+ *    null but caching usually wins.
  */
 object LocationAction {
 
@@ -33,26 +38,17 @@ object LocationAction {
 
     fun canHandle(text: String): Map<String, String>? {
         return when {
-            // Where am I
-            Regex("""^(where\s+am\s+I|my\s+location|current\s+location)$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^(where\s+am\s+i|my\s+location|current\s+location)$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_CURRENT)
-            }
-            // Share location
-            Regex("""^share\s+(my\s+)?location$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^share\s+(my\s+)?location$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_SHARE)
-            }
-            // Get lat/long
-            Regex("""^(what('?s| is)\s+)?lat(itude)?(\s+and\s+)?long(itude)?$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^(what('?s| is)\s+)?(my\s+)?lat(itude)?(\s+and\s+)?long(itude)?$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_LATLONG)
-            }
-            // Open maps
-            Regex("""^open\s+(google\s+)?maps$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^open\s+(google\s+)?maps$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_OPEN_MAPS)
-            }
-            // Navigate to
             Regex("""^navigate\s+(to\s+)?(.+)$""", RegexOption.IGNORE_CASE).matches(text) -> {
-                val match = Regex("""^navigate\s+(to\s+)?(.+)$""", RegexOption.IGNORE_CASE).find(text)
-                mapOf("action" to ACTION_NAVIGATE, "destination" to (match?.groupValues?.get(2) ?: ""))
+                val m = Regex("""^navigate\s+(to\s+)?(.+)$""", RegexOption.IGNORE_CASE).find(text)
+                mapOf("action" to ACTION_NAVIGATE, "destination" to (m?.groupValues?.get(2) ?: ""))
             }
             else -> null
         }
@@ -61,153 +57,128 @@ object LocationAction {
     fun execute(context: Context, params: Map<String, String>): LocalResponse {
         val action = params["action"] ?: return LocalResponse("Location action unclear.", "location_error")
 
-        val missingPerms = requiredPermissions().filter {
-            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (missingPerms.isNotEmpty()) {
-            return LocalResponse("Location permission not granted.", "location_permission")
+        if (action == ACTION_OPEN_MAPS || action == ACTION_NAVIGATE) {
+            return when (action) {
+                ACTION_OPEN_MAPS -> openMaps(context)
+                else -> navigateTo(context, params["destination"] ?: "")
+            }
         }
 
+        val granted = requiredPermissions().any {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
+        if (!granted) return LocalResponse("Location permission not granted.", "location_permission")
+        if (!locationEnabled(context)) return LocalResponse("Location is off. Turn it on first.", "location_disabled")
+
+        val loc = fetchLocation(context) ?: return LocalResponse("Couldn't get a location fix.", "location_error")
+
         return when (action) {
-            ACTION_CURRENT -> getCurrentLocation(context)
-            ACTION_SHARE -> shareLocation(context)
-            ACTION_LATLONG -> getLatLong(context)
-            ACTION_OPEN_MAPS -> openMaps(context)
-            ACTION_NAVIGATE -> navigateTo(context, params["destination"] ?: "")
+            ACTION_CURRENT -> LocalResponse(
+                "Your location is latitude ${"%.4f".format(loc.latitude)}, longitude ${"%.4f".format(loc.longitude)}.",
+                "location_current",
+                mapOf("lat" to loc.latitude.toString(), "lng" to loc.longitude.toString())
+            )
+            ACTION_LATLONG -> LocalResponse(
+                "${"%.4f".format(loc.latitude)}, ${"%.4f".format(loc.longitude)}",
+                "location_coordinates"
+            )
+            ACTION_SHARE -> shareLocation(context, loc)
             else -> LocalResponse("Unknown location action.", "location_error")
         }
     }
 
     @Suppress("MissingPermission")
-    private fun getCurrentLocation(context: Context): LocalResponse {
-        val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
-        var result: LocalResponse = LocalResponse("Couldn't get location.", "location_error")
-        val latch = CountDownLatch(1)
-
+    private fun fetchLocation(context: Context): Location? {
+        // 1. Fused provider via Play Services.
         try {
-            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                if (location != null) {
-                    result = LocalResponse("Your location is latitude ${location.latitude}, longitude ${location.longitude}.", "location_current")
-                }
-                latch.countDown()
-            }.addOnFailureListener {
-                result = LocalResponse("Location unavailable.", "location_error")
-                latch.countDown()
-            }
-            latch.await(10, TimeUnit.SECONDS)
-        } catch (e: Exception) {
-            result = LocalResponse("Location error.", "location_error")
-        }
+            val client = LocationServices.getFusedLocationProviderClient(context)
+            val task = client.lastLocation
+            val loc = try {
+                Tasks.await(task, 4, TimeUnit.SECONDS)
+            } catch (_: Exception) { null }
+            if (loc != null) return loc
+        } catch (_: Throwable) { /* no Play Services */ }
 
-        return result
+        // 2. LocationManager fallback.
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
+        val providers = try { lm.getProviders(true) } catch (_: Exception) { emptyList<String>() }
+        var best: Location? = null
+        for (p in providers) {
+            val l = try { lm.getLastKnownLocation(p) } catch (_: SecurityException) { null } ?: continue
+            if (best == null || l.accuracy < best.accuracy) best = l
+        }
+        return best
     }
 
-    @Suppress("MissingPermission")
-    private fun getLatLong(context: Context): LocalResponse {
-        val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
-        var result: LocalResponse = LocalResponse("Couldn't get coordinates.", "location_error")
-        val latch = CountDownLatch(1)
-
-        try {
-            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                if (location != null) {
-                    result = LocalResponse(
-                        "Latitude ${location.latitude}, longitude ${location.longitude}",
-                        "location_coordinates"
-                    )
-                }
-                latch.countDown()
-            }.addOnFailureListener {
-                result = LocalResponse("Location unavailable.", "location_error")
-                latch.countDown()
-            }
-            latch.await(10, TimeUnit.SECONDS)
-        } catch (e: Exception) {
-            result = LocalResponse("Location error.", "location_error")
+    private fun locationEnabled(context: Context): Boolean {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            lm.isLocationEnabled
+        } else {
+            lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
         }
-
-        return result
     }
 
-    @Suppress("MissingPermission")
-    private fun shareLocation(context: Context): LocalResponse {
-        val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
-        var result: LocalResponse = LocalResponse("Opening location sharing.", "location_share")
-        val latch = CountDownLatch(1)
-
-        try {
-            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                if (location != null) {
-                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, "My location: https://maps.google.com/?q=${location.latitude},${location.longitude}")
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    context.startActivity(Intent.createChooser(shareIntent, "Share location"))
-                    result = LocalResponse("Sharing location.", "location_share")
-                }
-                latch.countDown()
-            }.addOnFailureListener {
-                result = LocalResponse("Location unavailable.", "location_error")
-                latch.countDown()
+    private fun shareLocation(context: Context, loc: Location): LocalResponse {
+        return try {
+            val url = "https://maps.google.com/?q=${loc.latitude},${loc.longitude}"
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, "My location: $url")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
-            latch.await(10, TimeUnit.SECONDS)
-        } catch (e: Exception) {
-            result = LocalResponse("Location error.", "location_error")
+            context.startActivity(Intent.createChooser(intent, "Share location").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            LocalResponse("Sharing location.", "location_share")
+        } catch (_: Exception) {
+            LocalResponse("Couldn't share location.", "location_error")
         }
-
-        return result
     }
 
     private fun openMaps(context: Context): LocalResponse {
         return try {
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("geo:0,0")
+                data = Uri.parse("geo:0,0?q=")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
-            context.startActivity(intent)
-            LocalResponse("Opening maps.", "location_maps")
-        } catch (e: Exception) {
-            // Try Google Maps specifically
-            try {
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    data = Uri.parse("com.google.android.apps.maps")
+            if (intent.resolveActivity(context.packageManager) != null) {
+                context.startActivity(intent)
+                LocalResponse("Opening maps.", "location_maps")
+            } else {
+                // Last resort: open the Maps web app.
+                val web = Intent(Intent.ACTION_VIEW).apply {
+                    data = Uri.parse("https://www.google.com/maps")
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
-                context.startActivity(intent)
-                LocalResponse("Opening Google Maps.", "location_maps")
-            } catch (e2: Exception) {
-                LocalResponse("Couldn't open maps.", "location_error")
+                context.startActivity(web)
+                LocalResponse("Opening Maps.", "location_maps")
             }
+        } catch (_: Exception) {
+            LocalResponse("Couldn't open maps.", "location_error")
         }
     }
 
     private fun navigateTo(context: Context, destination: String): LocalResponse {
-        if (destination.isBlank()) {
-            return LocalResponse("Where would you like to go?", "location_navigate")
-        }
-
+        if (destination.isBlank()) return LocalResponse("Where would you like to go?", "location_navigate")
         return try {
-            val encodedDest = Uri.encode(destination)
+            val encoded = Uri.encode(destination)
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("google.navigation:q=$encodedDest")
+                data = Uri.parse("google.navigation:q=$encoded")
                 setPackage("com.google.android.apps.maps")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
-            
             if (intent.resolveActivity(context.packageManager) != null) {
                 context.startActivity(intent)
                 LocalResponse("Navigating to $destination.", "location_navigate")
             } else {
-                // Fallback to web maps
-                val webIntent = Intent(Intent.ACTION_VIEW).apply {
-                    data = Uri.parse("https://www.google.com/maps/dir/?api=1&destination=$encodedDest")
+                val web = Intent(Intent.ACTION_VIEW).apply {
+                    data = Uri.parse("https://www.google.com/maps/dir/?api=1&destination=$encoded")
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
-                context.startActivity(webIntent)
-                LocalResponse("Opening Google Maps for $destination.", "location_navigate")
+                context.startActivity(web)
+                LocalResponse("Opening Maps for $destination.", "location_navigate")
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             LocalResponse("Couldn't start navigation.", "location_error")
         }
     }

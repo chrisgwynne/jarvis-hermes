@@ -1,64 +1,45 @@
 package com.jarvis.hermes
 
-import android.Manifest
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.view.View
-import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.LinearLayout
+import android.widget.Spinner
+import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import com.jarvis.hermes.databinding.ActivitySettingsBinding
+import com.jarvis.hermes.service.VoiceService
+import java.util.Locale
 
 /**
  * Settings activity for Jarvis Hermes.
- * Handles all configuration options including battery optimization,
- * Bluetooth auto-start, call screening, notification reading, and quick phrases.
+ *
+ * API key + sensitive prefs are stored in EncryptedSharedPreferences and
+ * migrated on first run.
  */
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
-
-    private val batteryOptimizationReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == "android.intent.action.BATTERY_OPTIMIZATION_STATE_CHANGED") {
-                // Check if we're now exempt
-                if (BatteryOptimizationHelper.isBatteryExempt(this@SettingsActivity)) {
-                    BatteryOptimizationHelper.setBatteryExempt(this@SettingsActivity, true)
-                    Toast.makeText(this@SettingsActivity, "Jarvis will stay alive in the background", Toast.LENGTH_LONG).show()
-                }
-            }
-        }
-    }
-
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        // Handle permission results
-    }
+    private lateinit var languageSpinner: Spinner
+    private lateinit var languageLabels: List<Pair<String, Locale>>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
+        EncryptedPrefs.migrateFromPlain(this, "jarvis_hermes", listOf("api_key"))
+        injectExtras()
         loadSettings()
         setupUI()
-        registerBatteryReceiver()
     }
 
     private fun loadSettings() {
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-
-        // Load values into UI elements
+        val secure = EncryptedPrefs.get(this)
         binding.inputHermesIp.setText(prefs.getString("hermes_ip", ""))
-        binding.inputApiKey.setText(prefs.getString("api_key", ""))
+        binding.inputApiKey.setText(secure.getString("api_key", ""))
         binding.sliderSilenceDelay.value = prefs.getLong("silence_delay", 1500L).toFloat()
         binding.switchOfflineStt.isChecked = prefs.getBoolean("use_offline_stt", true)
         binding.switchWakeWord.isChecked = prefs.getBoolean("wake_word_mode", false)
@@ -67,15 +48,12 @@ class SettingsActivity : AppCompatActivity() {
         binding.switchBluetoothAuto.isChecked = prefs.getBoolean("bluetooth_auto_enabled", false)
         binding.switchCallScreening.isChecked = prefs.getBoolean("call_screening_enabled", true)
 
-        val wakePhrase = prefs.getString("wake_phrase", "okay jarvis") ?: "okay jarvis"
-        binding.inputWakePhrase.setText(wakePhrase)
-
-        // Load system prompt
-        val systemPrompt = prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault())
-        binding.inputSystemPrompt.setText(systemPrompt)
-
-        // Setup Bluetooth device type spinner
+        binding.inputWakePhrase.setText(prefs.getString("wake_phrase", "okay jarvis") ?: "okay jarvis")
+        binding.inputSystemPrompt.setText(
+            prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault())
+        )
         setupBluetoothDeviceSpinner()
+        applySavedLanguage()
     }
 
     private fun setupBluetoothDeviceSpinner() {
@@ -83,40 +61,146 @@ class SettingsActivity : AppCompatActivity() {
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, deviceTypes)
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerBtDeviceType.adapter = adapter
+        binding.spinnerBtDeviceType.setSelection(
+            when (BluetoothAutoManager.getDeviceTypes(this)) {
+                BluetoothAutoManager.DEVICE_TYPE_CAR -> 1
+                BluetoothAutoManager.DEVICE_TYPE_HEADPHONES -> 2
+                else -> 0
+            }
+        )
+    }
 
-        val currentType = BluetoothAutoManager.getDeviceTypes(this)
-        val selection = when (currentType) {
-            BluetoothAutoManager.DEVICE_TYPE_CAR -> 1
-            BluetoothAutoManager.DEVICE_TYPE_HEADPHONES -> 2
-            else -> 0
+    /**
+     * The XML layout is fixed — append the extras (language picker,
+     * driving mode toggle, metrics link, onboarding link) programmatically
+     * so we don't have to touch the resource layout.
+     */
+    private fun injectExtras() {
+        val scroll = binding.root as android.view.ViewGroup
+        val container = scroll.getChildAt(0) as LinearLayout
+
+        // ---- TTS language ----
+        container.addView(sectionLabel("TTS Language"))
+        val langRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        langRow.addView(rowLabel("Voice"))
+        languageLabels = listOf(
+            "System default" to Locale.getDefault(),
+            "English (UK)" to Locale.UK,
+            "English (US)" to Locale.US,
+            "English (Australia)" to Locale("en", "AU"),
+            "English (India)" to Locale("en", "IN"),
+            "German" to Locale.GERMAN,
+            "French" to Locale.FRENCH,
+            "Spanish" to Locale("es", "ES"),
+            "Italian" to Locale.ITALIAN,
+            "Dutch" to Locale("nl", "NL")
+        )
+        languageSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@SettingsActivity,
+                android.R.layout.simple_spinner_item,
+                languageLabels.map { it.first }).also {
+                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
         }
-        binding.spinnerBtDeviceType.setSelection(selection)
+        langRow.addView(languageSpinner, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        container.addView(langRow)
+
+        // ---- Driving mode (forced) ----
+        container.addView(sectionLabel("Driving Mode"))
+        val drivingRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        drivingRow.addView(rowLabel("Force driving mode"))
+        val drivingSwitch = com.google.android.material.switchmaterial.SwitchMaterial(this).apply {
+            isChecked = DrivingModeManager.isActive(this@SettingsActivity)
+        }
+        drivingRow.addView(drivingSwitch, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        container.addView(drivingRow)
+        drivingSwitch.setOnCheckedChangeListener { _, checked ->
+            DrivingModeManager.setForced(this, checked)
+        }
+
+        // ---- Metrics + Onboarding links ----
+        container.addView(sectionLabel("Diagnostics"))
+        val metricsBtn = android.widget.Button(this).apply {
+            text = "Show metrics"
+            setOnClickListener { startActivity(Intent(this@SettingsActivity, MetricsActivity::class.java)) }
+        }
+        container.addView(metricsBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 12 })
+
+        val onboardingBtn = android.widget.Button(this).apply {
+            text = "Replay onboarding"
+            setOnClickListener { startActivity(Intent(this@SettingsActivity, OnboardingActivity::class.java)) }
+        }
+        container.addView(onboardingBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 12 })
+    }
+
+    private fun sectionLabel(text: String): TextView = TextView(this).apply {
+        this.text = text
+        setTextColor(0xFF8B949E.toInt())
+        textSize = 13f
+        val lp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 24; bottomMargin = 8 }
+        layoutParams = lp
+    }
+
+    private fun rowLabel(text: String): TextView = TextView(this).apply {
+        this.text = text
+        setTextColor(0xFFE6EDF3.toInt())
+        textSize = 14f
+        val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        layoutParams = lp
+    }
+
+    private fun applySavedLanguage() {
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        val saved = prefs.getString("tts_locale", "default")
+        val idx = languageLabels.indexOfFirst {
+            when (saved) {
+                "default" -> it.first == "System default"
+                else -> it.second.toLanguageTag() == saved
+            }
+        }.coerceAtLeast(0)
+        languageSpinner.setSelection(idx)
     }
 
     private fun setupUI() {
         binding.btnSave.setOnClickListener { saveSettings() }
         binding.btnCancel.setOnClickListener { finish() }
         binding.btnResetPrompt.setOnClickListener {
-            val defaultPrompt = SystemPromptBuilder.getDefault()
-            binding.inputSystemPrompt.setText(defaultPrompt)
+            binding.inputSystemPrompt.setText(SystemPromptBuilder.getDefault())
         }
-
         binding.btnKeepAlive.setOnClickListener {
             BatteryOptimizationHelper.openBatteryOptimizationSettings(this, 1001)
         }
-
         binding.btnQuickPhrases.setOnClickListener {
             startActivity(Intent(this, QuickPhrasesActivity::class.java))
         }
+    }
 
-        // Update silence delay label when slider changes
-        binding.sliderSilenceDelay.addOnChangeListener { _, value, _ ->
-            // Label updates handled in layout or we could add a TextView
+    private fun isValidHost(host: String): Boolean {
+        if (host.isBlank()) return false
+        if (host.matches(Regex("""^(\d{1,3}\.){3}\d{1,3}$"""))) {
+            return host.split(".").all { it.toIntOrNull() in 0..255 }
         }
+        return host.matches(Regex("""^[A-Za-z0-9][A-Za-z0-9.\-]{0,253}$"""))
     }
 
     private fun saveSettings() {
         val ip = binding.inputHermesIp.text.toString().trim()
+        if (!isValidHost(ip)) {
+            binding.inputHermesIp.error = "Enter an IP or hostname"
+            Toast.makeText(this, "Invalid host", Toast.LENGTH_SHORT).show()
+            return
+        }
         val key = binding.inputApiKey.text.toString().trim()
         val silenceDelayVal = binding.sliderSilenceDelay.value.toLong()
         val useOffline = binding.switchOfflineStt.isChecked
@@ -128,20 +212,9 @@ class SettingsActivity : AppCompatActivity() {
         val wakePhraseText = binding.inputWakePhrase.text.toString().trim().ifBlank { "okay jarvis" }
         val systemPrompt = binding.inputSystemPrompt.text.toString().trim()
 
-        if (ip.isBlank()) {
-            Toast.makeText(this, "Tailscale IP required", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        if (!ip.matches(Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$")) && !ip.startsWith("100.")) {
-            Toast.makeText(this, "Enter a valid Tailscale IP (e.g. 100.x.x.x)", Toast.LENGTH_LONG).show()
-            return
-        }
-
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
         prefs.edit()
             .putString("hermes_ip", ip)
-            .putString("api_key", key)
             .putLong("silence_delay", silenceDelayVal)
             .putBoolean("use_offline_stt", useOffline)
             .putBoolean("wake_word_mode", wakeWord)
@@ -151,43 +224,29 @@ class SettingsActivity : AppCompatActivity() {
             .putBoolean("call_screening_enabled", callScreening)
             .putString("wake_phrase", wakePhraseText)
             .putString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, systemPrompt)
+            .putString("tts_locale", selectedTtsLocaleTag())
             .apply()
 
-        // Save Bluetooth device type
-        val deviceTypeIndex = binding.spinnerBtDeviceType.selectedItemPosition
-        val deviceType = when (deviceTypeIndex) {
+        // Persist API key encrypted, never in plain prefs.
+        EncryptedPrefs.get(this).edit().putString("api_key", key).apply()
+
+        val deviceType = when (binding.spinnerBtDeviceType.selectedItemPosition) {
             1 -> BluetoothAutoManager.DEVICE_TYPE_CAR
             2 -> BluetoothAutoManager.DEVICE_TYPE_HEADPHONES
             else -> BluetoothAutoManager.DEVICE_TYPE_ALL
         }
         BluetoothAutoManager.setDeviceTypes(this, deviceType)
 
-        // Sync to VoiceService via broadcast
-        val serviceIntent = Intent(this, service.VoiceService::class.java)
-        serviceIntent.action = "SETTINGS_UPDATED"
-        startService(serviceIntent)
+        val svc = Intent(this, VoiceService::class.java).apply { action = "SETTINGS_UPDATED" }
+        try { startService(svc) } catch (_: Exception) {}
 
         Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
         finish()
     }
 
-    private fun registerBatteryReceiver() {
-        BatteryOptimizationHelper.registerBatteryOptimizationReceiver(this, batteryOptimizationReceiver)
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        BatteryOptimizationHelper.unregisterBatteryOptimizationReceiver(this, batteryOptimizationReceiver)
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 1001) {
-            // Check if exemption was granted
-            if (BatteryOptimizationHelper.isBatteryExempt(this)) {
-                BatteryOptimizationHelper.setBatteryExempt(this, true)
-                Toast.makeText(this, "Jarvis will stay alive in the background", Toast.LENGTH_LONG).show()
-            }
-        }
+    private fun selectedTtsLocaleTag(): String {
+        val idx = languageSpinner.selectedItemPosition.coerceAtLeast(0)
+        val (label, locale) = languageLabels[idx]
+        return if (label == "System default") "default" else locale.toLanguageTag()
     }
 }

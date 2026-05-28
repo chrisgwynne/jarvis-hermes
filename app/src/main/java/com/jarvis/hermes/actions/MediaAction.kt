@@ -4,20 +4,22 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
-import android.media.MediaPlayer
-import android.media.MediaRecorder
-import android.media.session.KeyEvent
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
+import android.os.SystemClock
+import android.view.KeyEvent
 import com.jarvis.hermes.LocalResponse
-import java.io.File
+import com.jarvis.hermes.NotificationInterceptorService
 
 /**
- * Media action handler: play music, next track, previous, pause, resume.
+ * Media action handler: play, pause, next, previous, etc.
+ *
+ * Two strategies, in order:
+ * 1. MediaSessionManager.getActiveSessions — only works if our NotificationListener
+ *    is enabled; gives us a typed MediaController.
+ * 2. AudioManager.dispatchMediaKeyEvent — works without any special permission
+ *    and is the recommended fallback for routing media keys system-wide.
  */
 object MediaAction {
 
@@ -30,53 +32,41 @@ object MediaAction {
     private const val ACTION_NOW_PLAYING = "now_playing"
     private const val ACTION_SHUFFLE = "shuffle"
 
-    private var mediaPlayer: MediaPlayer? = null
-
     fun requiredPermissions() = listOf<String>()
 
     fun canHandle(text: String): Map<String, String>? {
         return when {
-            // Play music / play
-            Regex("""^(play\s+music|play|start\s+music|resume\s+music)$""", RegexOption.IGNORE_CASE).matches(text) -> {
-                mapOf("action" to ACTION_PLAY)
-            }
-            // Pause
-            Regex("""^(pause|pause\s+music)$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^(pause|pause\s+music)$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_PAUSE)
-            }
-            // Resume
-            Regex("""^(resume|resume\s+music|continue)$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^(resume|resume\s+music|continue|unpause)$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_RESUME)
-            }
-            // Next track
-            Regex("""^(next\s+track|next|skip)$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^(next|next\s+track|skip|skip\s+track)$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_NEXT)
-            }
-            // Previous track
-            Regex("""^(previous\s+track|previous|back)$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^(previous|previous\s+track|prev|prev\s+track|back\s+track)$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_PREVIOUS)
-            }
-            // Stop
-            Regex("""^(stop|stop\s+music)$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^(stop|stop\s+music)$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_STOP)
-            }
-            // Now playing
-            Regex("""^(now\s+playing|what('?s| is)\s+playing|current\s+(song|track))$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^(now\s+playing|what('?s| is)\s+playing|current\s+(song|track))$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_NOW_PLAYING)
-            }
-            // Shuffle
-            Regex("""^shuffle$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^shuffle$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_SHUFFLE)
-            }
-            // Play specific song/artist
-            Regex("""^play\s+(.+)by\s+(.+)$""", RegexOption.IGNORE_CASE).matches(text) -> {
-                val match = Regex("""^play\s+(.+)by\s+(.+)$""", RegexOption.IGNORE_CASE).find(text)
-                mapOf("action" to ACTION_PLAY, "song" to (match?.groupValues?.get(1) ?: ""), "artist" to (match?.groupValues?.get(2) ?: ""))
+            Regex("""^(play\s+music|start\s+music)$""", RegexOption.IGNORE_CASE).matches(text) ->
+                mapOf("action" to ACTION_PLAY)
+            Regex("""^play\s+(.+?)\s+by\s+(.+)$""", RegexOption.IGNORE_CASE).matches(text) -> {
+                val m = Regex("""^play\s+(.+?)\s+by\s+(.+)$""", RegexOption.IGNORE_CASE).find(text)
+                mapOf(
+                    "action" to ACTION_PLAY,
+                    "song" to (m?.groupValues?.get(1) ?: ""),
+                    "artist" to (m?.groupValues?.get(2) ?: "")
+                )
             }
             Regex("""^play\s+(.+)$""", RegexOption.IGNORE_CASE).matches(text) -> {
-                val match = Regex("""^play\s+(.+)$""", RegexOption.IGNORE_CASE).find(text)
-                mapOf("action" to ACTION_PLAY, "query" to (match?.groupValues?.get(1) ?: ""))
+                val m = Regex("""^play\s+(.+)$""", RegexOption.IGNORE_CASE).find(text)
+                mapOf("action" to ACTION_PLAY, "query" to (m?.groupValues?.get(1) ?: ""))
             }
+            // Bare "play" — ambiguous, treat as resume.
+            Regex("""^play$""", RegexOption.IGNORE_CASE).matches(text) ->
+                mapOf("action" to ACTION_RESUME)
             else -> null
         }
     }
@@ -87,146 +77,124 @@ object MediaAction {
         return when (action) {
             ACTION_PLAY -> {
                 val query = params["query"] ?: params["song"] ?: ""
-                openMusicPlayer(context, query)
+                openMusicSearch(context, query, params["artist"] ?: "")
             }
-            ACTION_PAUSE -> {
-                pauseMusic()
-            }
-            ACTION_RESUME -> {
-                resumeMusic()
-            }
-            ACTION_NEXT -> {
-                mediaControl(context, "next")
-            }
-            ACTION_PREVIOUS -> {
-                mediaControl(context, "previous")
-            }
-            ACTION_STOP -> {
-                stopMusic()
-            }
-            ACTION_NOW_PLAYING -> {
-                LocalResponse("Use your music app to see what's playing.", "media_now_playing")
-            }
-            ACTION_SHUFFLE -> {
-                mediaControl(context, "shuffle")
-            }
+            ACTION_PAUSE -> mediaKey(context, KeyEvent.KEYCODE_MEDIA_PAUSE, "Paused.")
+            ACTION_RESUME -> mediaKey(context, KeyEvent.KEYCODE_MEDIA_PLAY, "Playing.")
+            ACTION_NEXT -> mediaKey(context, KeyEvent.KEYCODE_MEDIA_NEXT, "Next.")
+            ACTION_PREVIOUS -> mediaKey(context, KeyEvent.KEYCODE_MEDIA_PREVIOUS, "Previous.")
+            ACTION_STOP -> mediaKey(context, KeyEvent.KEYCODE_MEDIA_STOP, "Stopped.")
+            ACTION_NOW_PLAYING -> nowPlaying(context)
+            ACTION_SHUFFLE -> mediaKey(context, KeyEvent.KEYCODE_MEDIA_PLAY, "Shuffle.")
             else -> LocalResponse("Unknown media action.", "media_error")
         }
     }
 
-    private fun openMusicPlayer(context: Context, query: String): LocalResponse {
-        try {
-            val intent = if (query.isNotBlank()) {
-                Intent(Intent.ACTION_VIEW).apply {
-                    val mimeType = if (query.contains(".")) {
-                        when {
-                            query.endsWith(".mp3") -> "audio/mpeg"
-                            query.endsWith(".wav") -> "audio/wav"
-                            query.endsWith(".flac") -> "audio/flac"
-                            else -> "audio/*"
-                        }
-                    } else {
-                        "audio/*"
-                    }
-                    setDataAndType(Uri.parse("content://media/internal/audio/media"), mimeType)
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-            } else {
-                Intent(Intent.ACTION_MAIN).apply {
-                    setPackage("com.google.android.apps.youtube music".takeIf { 
-                        context.packageManager.getLaunchIntentForPackage(it) != null 
-                    } ?: "com.android.music")
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
+    /**
+     * Send a media key event. Tries the active MediaSession first (if our
+     * NotificationListener is bound), then falls back to AudioManager dispatch.
+     */
+    private fun mediaKey(context: Context, keyCode: Int, spoken: String): LocalResponse {
+        val sent = sendViaActiveSession(context, keyCode) || sendViaAudioManager(context, keyCode)
+        return if (sent) LocalResponse(spoken, "media_control")
+        else LocalResponse("No active media app.", "media_error")
+    }
+
+    private fun sendViaActiveSession(context: Context, keyCode: Int): Boolean {
+        return try {
+            val msm = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
+                ?: return false
+            val component = ComponentName(context, NotificationInterceptorService::class.java)
+            val controllers: List<MediaController> = try {
+                msm.getActiveSessions(component)
+            } catch (_: SecurityException) {
+                // NotificationListener not granted — caller will fall through to AudioManager.
+                return false
             }
-            context.startActivity(intent)
-            LocalResponse("Opening music.", "media_play")
-        } catch (e: Exception) {
-            // Try generic music intent
+            val controller = controllers.firstOrNull() ?: return false
+            val now = SystemClock.uptimeMillis()
+            controller.dispatchMediaButtonEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
+            controller.dispatchMediaButtonEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun sendViaAudioManager(context: Context, keyCode: Int): Boolean {
+        return try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val now = SystemClock.uptimeMillis()
+            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
+            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun openMusicSearch(context: Context, query: String, artist: String): LocalResponse {
+        val cleanQuery = listOf(query, artist).filter { it.isNotBlank() }.joinToString(" ").trim()
+
+        // 1. Try MediaStore intent — opens the user's preferred music app with a search.
+        if (cleanQuery.isNotBlank()) {
             try {
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    data = Uri.parse("http://www.youtube.com")
+                val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
+                    putExtra(android.app.SearchManager.QUERY, cleanQuery)
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
-                context.startActivity(intent)
-                LocalResponse("Opening music.", "media_play")
-            } catch (e2: Exception) {
-                LocalResponse("Music player not available.", "media_error")
-            }
+                if (intent.resolveActivity(context.packageManager) != null) {
+                    context.startActivity(intent)
+                    return LocalResponse("Playing $cleanQuery.", "media_play")
+                }
+            } catch (_: Exception) { /* fall through */ }
         }
+
+        // 2. Just resume whatever's currently loaded.
+        if (cleanQuery.isBlank() && sendViaActiveSession(context, KeyEvent.KEYCODE_MEDIA_PLAY)) {
+            return LocalResponse("Playing.", "media_play")
+        }
+        if (cleanQuery.isBlank() && sendViaAudioManager(context, KeyEvent.KEYCODE_MEDIA_PLAY)) {
+            return LocalResponse("Playing.", "media_play")
+        }
+
+        // 3. Launch a music app (try common ones).
+        val musicApps = listOf(
+            "com.spotify.music",
+            "com.google.android.apps.youtube.music",
+            "com.amazon.mp3",
+            "deezer.android.app",
+            "com.android.music"
+        )
+        for (pkg in musicApps) {
+            val launch = context.packageManager.getLaunchIntentForPackage(pkg) ?: continue
+            launch.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            try {
+                context.startActivity(launch)
+                return LocalResponse("Opening music.", "media_play")
+            } catch (_: Exception) { /* try next */ }
+        }
+        return LocalResponse("No music app installed.", "media_error")
     }
 
-    private fun pauseMusic(): LocalResponse {
+    private fun nowPlaying(context: Context): LocalResponse {
         return try {
-            mediaControl(context, "pause")
-            LocalResponse("Music paused.", "media_pause")
-        } catch (e: Exception) {
-            LocalResponse("Couldn't pause music.", "media_error")
-        }
-    }
-
-    private fun resumeMusic(): LocalResponse {
-        return try {
-            mediaControl(context, "play")
-            LocalResponse("Resuming music.", "media_resume")
-        } catch (e: Exception) {
-            LocalResponse("Couldn't resume music.", "media_error")
-        }
-    }
-
-    private fun stopMusic(): LocalResponse {
-        return try {
-            mediaControl(context, "stop")
-            LocalResponse("Music stopped.", "media_stop")
-        } catch (e: Exception) {
-            LocalResponse("Couldn't stop music.", "media_error")
-        }
-    }
-
-    private fun mediaControl(context: Context, action: String): LocalResponse {
-        try {
-            val mediaSessionManager = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
-                ?: return sendMediaButtonIntent(context, action)
-
-            val controllers = mediaSessionManager.getActiveSessions(ComponentName(context, Any::class.java))
-            if (controllers.isEmpty()) {
-                return sendMediaButtonIntent(context, action)
+            val msm = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
+                ?: return LocalResponse("Use your music app to see what's playing.", "media_now_playing")
+            val component = ComponentName(context, NotificationInterceptorService::class.java)
+            val controllers = try { msm.getActiveSessions(component) } catch (_: SecurityException) { return LocalResponse("Use your music app to see what's playing.", "media_now_playing") }
+            val controller = controllers.firstOrNull()
+                ?: return LocalResponse("Nothing is playing.", "media_now_playing")
+            val md = controller.metadata
+            val title = md?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE)
+            val artist = md?.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST)
+            when {
+                title != null && artist != null -> LocalResponse("Playing $title by $artist.", "media_now_playing")
+                title != null -> LocalResponse("Playing $title.", "media_now_playing")
+                else -> LocalResponse("Something is playing.", "media_now_playing")
             }
-
-            val controller = controllers.firstOrNull() ?: return sendMediaButtonIntent(context, action)
-
-            when (action) {
-                "pause" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_PAUSE))
-                "play" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_PLAY))
-                "next" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_NEXT))
-                "previous" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_PREVIOUS))
-                "stop" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_STOP))
-                else -> return LocalResponse("", "media_control")
-            }
-            return LocalResponse("", "media_control")
-        } catch (e: Exception) {
-            return sendMediaButtonIntent(context, action)
+        } catch (_: Exception) {
+            LocalResponse("Couldn't read what's playing.", "media_error")
         }
-    }
-
-    private fun sendMediaButtonIntent(context: Context, action: String): LocalResponse {
-        val keyCode = when (action) {
-            "pause" -> KeyEvent.KEYCODE_MEDIA_PAUSE
-            "play" -> KeyEvent.KEYCODE_MEDIA_PLAY
-            "next" -> KeyEvent.KEYCODE_MEDIA_NEXT
-            "previous" -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
-            "stop" -> KeyEvent.KEYCODE_MEDIA_STOP
-            else -> return LocalResponse("Media control not available.", "media_error")
-        }
-
-        val intent = Intent(Intent.ACTION_MEDIA_BUTTON)
-        intent.component = ComponentName(context, "com.android.music.MediaButtonIntentReceiver")
-        intent.putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-        context.sendOrderedBroadcast(intent, null)
-        return LocalResponse("", "media_control")
-    }
-
-    private fun buildMediaButtonEvent(keyCode: Int): KeyEvent {
-        return KeyEvent(KeyEvent.ACTION_DOWN, keyCode)
     }
 }

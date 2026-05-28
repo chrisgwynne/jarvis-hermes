@@ -64,8 +64,8 @@ class JarvisWidget : AppWidgetProvider() {
 
             views.setTextViewText(R.id.widgetStatusText, statusText)
             try {
-                views.setColor(R.id.widgetMicBtn, "setColorFilter", android.graphics.Color.parseColor(micTint))
-            } catch (e: Exception) { /* fallback */ }
+                views.setInt(R.id.widgetMicBtn, "setColorFilter", android.graphics.Color.parseColor(micTint))
+            } catch (e: Exception) { /* fallback — leave default tint */ }
 
             val toggleIntent = Intent(context, JarvisWidget::class.java).apply {
                 action = ACTION_TOGGLE

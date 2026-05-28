@@ -1,30 +1,38 @@
 package com.jarvis.hermes.actions
 
 import android.Manifest
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.provider.CalendarContract
-import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.jarvis.hermes.LocalResponse
 import java.text.SimpleDateFormat
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
-import java.time.ZoneId
-import java.util.*
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /**
- * Calendar action handler: add event, what's on tomorrow, schedule.
+ * Calendar action handler.
+ *
+ *  - Event creation parses dates (tomorrow, next monday, may 15, etc.) and
+ *    times (3pm, 15:30, half past four).
+ *  - Event queries read upcoming events from the user's visible calendars.
+ *  - When no calendar is writable we fall back to the system "create event"
+ *    intent so the user picks.
  */
 object CalendarAction {
 
     private const val ACTION_ADD = "add"
-    private const val ACTION_TOMORROW = "tomorrow"
-    private const val ACTION_TODAY = "today"
     private const val ACTION_QUERY = "query"
     private const val ACTION_OPEN = "open"
 
@@ -35,30 +43,20 @@ object CalendarAction {
 
     fun canHandle(text: String): Map<String, String>? {
         return when {
-            // "add event meeting tomorrow at 3pm"
-            Regex("""^add\s+event\s+(.+)$""", RegexOption.IGNORE_CASE).matches(text) -> {
-                val match = Regex("""^add\s+event\s+(.+)$""", RegexOption.IGNORE_CASE).find(text)
-                mapOf("action" to ACTION_ADD, "title" to (match?.groupValues?.get(1) ?: ""))
+            Regex("""^(add\s+event|schedule|create\s+event|new\s+event)\s+(.+)$""", RegexOption.IGNORE_CASE).matches(text) -> {
+                val m = Regex("""^(add\s+event|schedule|create\s+event|new\s+event)\s+(.+)$""", RegexOption.IGNORE_CASE).find(text)
+                mapOf("action" to ACTION_ADD, "title" to (m?.groupValues?.get(2) ?: ""))
             }
-            // "schedule meeting at 3pm"
-            Regex("""^schedule\s+(.+)$""", RegexOption.IGNORE_CASE).matches(text) -> {
-                val match = Regex("""^schedule\s+(.+)$""", RegexOption.IGNORE_CASE).find(text)
-                mapOf("action" to ACTION_ADD, "title" to (match?.groupValues?.get(1) ?: ""))
+            Regex("""^what('?s| is)?\s*(on|happening|going\s*on)\s*(today|tomorrow|this\s+week|next\s+week)?\??$""", RegexOption.IGNORE_CASE).matches(text) -> {
+                val m = Regex("""^what('?s| is)?\s*(on|happening|going\s*on)\s*(today|tomorrow|this\s+week|next\s+week)?\??$""", RegexOption.IGNORE_CASE).find(text)
+                val window = m?.groupValues?.get(3)?.lowercase()?.ifBlank { "tomorrow" } ?: "tomorrow"
+                mapOf("action" to ACTION_QUERY, "window" to window)
             }
-            // "what's on tomorrow" or "what's happening tomorrow"
-            Regex("""^what('?s| is)\s*(on|happening|going\s*on)\s*(tomorrow|today)?$""", RegexOption.IGNORE_CASE).matches(text) -> {
-                val match = Regex("""^what('?s| is)\s*(on|happening|going\s*on)\s*(tomorrow|today)?$""", RegexOption.IGNORE_CASE).find(text)
-                val day = match?.groupValues?.get(3)?.lowercase() ?: "tomorrow"
-                mapOf("action" to ACTION_TOMORROW, "day" to day)
+            Regex("""^(what\s+do\s+i\s+have|show\s+(my\s+)?schedule|my\s+events?)(\s+today|\s+tomorrow)?\??$""", RegexOption.IGNORE_CASE).matches(text) -> {
+                mapOf("action" to ACTION_QUERY, "window" to (if (text.contains("today", ignoreCase = true)) "today" else "tomorrow"))
             }
-            // "what do I have tomorrow" / "show my schedule"
-            Regex("""^(what\s+(do\s+I\s+have|is\s+(on|scheduled))|show\s+(my\s+)?schedule).*$""", RegexOption.IGNORE_CASE).matches(text) -> {
-                mapOf("action" to ACTION_QUERY)
-            }
-            // "open calendar"
-            Regex("""^open\s+calendar$""", RegexOption.IGNORE_CASE).matches(text) -> {
+            Regex("""^open\s+calendar$""", RegexOption.IGNORE_CASE).matches(text) ->
                 mapOf("action" to ACTION_OPEN)
-            }
             else -> null
         }
     }
@@ -66,231 +64,220 @@ object CalendarAction {
     fun execute(context: Context, params: Map<String, String>): LocalResponse {
         val action = params["action"] ?: return LocalResponse("Calendar action unclear.", "calendar_error")
 
-        val missingPerms = requiredPermissions().filter {
-            ActivityCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        if (action == ACTION_OPEN) return openCalendar(context)
+
+        val missing = requiredPermissions().any {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missingPerms.isNotEmpty() && action != ACTION_OPEN) {
-            return LocalResponse("Calendar permission not granted.", "calendar_permission")
+        if (missing) {
+            // Fall back to system intents that don't need permission.
+            return when (action) {
+                ACTION_ADD -> openInsertEventComposer(context, params["title"].orEmpty())
+                else -> LocalResponse("Calendar permission not granted.", "calendar_permission")
+            }
         }
 
         return when (action) {
-            ACTION_ADD -> {
-                val title = params["title"] ?: ""
-                if (title.isBlank()) {
-                    return LocalResponse("What's the event name?", "calendar_add")
-                }
-                // Parse time from title if possible, otherwise default to tomorrow 9am
-                val eventTime = parseEventTime(title) ?: (System.currentTimeMillis() + 24 * 60 * 60 * 1000)
-                val endTime = eventTime + 60 * 60 * 1000 // 1 hour duration
-
-                val calendarId = getDefaultCalendar(context) ?: "1"
-
-                try {
-                    val values = ContentValues().apply {
-                        put(CalendarContract.Events.DTSTART, eventTime)
-                        put(CalendarContract.Events.DTEND, endTime)
-                        put(CalendarContract.Events.TITLE, title)
-                        put(CalendarContract.Events.CALENDAR_ID, calendarId.toLong())
-                        put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
-                    }
-                    val uri = context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
-                    if (uri != null) {
-                        LocalResponse("Added event: $title.", "calendar_added", mapOf("title" to title))
-                    } else {
-                        LocalResponse("Couldn't add event.", "calendar_error")
-                    }
-                } catch (e: Exception) {
-                    LocalResponse("Couldn't add event.", "calendar_error")
-                }
-            }
-            ACTION_TOMORROW, ACTION_QUERY -> {
-                val events = getUpcomingEvents(context, if (action == ACTION_TOMORROW) 2 else 1)
-                if (events.isEmpty()) {
-                    return LocalResponse("No upcoming events.", "calendar_empty")
-                }
-                val summary = events.take(5).joinToString(". ")
-                LocalResponse(summary, "calendar_events", mapOf("events" to events.joinToString("|")))
-            }
-            ACTION_OPEN -> {
-                try {
-                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                        data = CalendarContract.Events.CONTENT_URI
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    context.startActivity(intent)
-                    LocalResponse("Opening calendar.", "calendar_open")
-                } catch (e: Exception) {
-                    LocalResponse("Couldn't open calendar.", "calendar_error")
-                }
-            }
+            ACTION_ADD -> addEvent(context, params["title"].orEmpty())
+            ACTION_QUERY -> queryEvents(context, params["window"] ?: "tomorrow")
             else -> LocalResponse("Unknown calendar action.", "calendar_error")
         }
     }
 
-    private fun getDefaultCalendar(context: Context): String? {
-        val projection = arrayOf(CalendarContract.Calendars._ID, CalendarContract.Calendars.IS_PRIMARY)
-        val selection = "${CalendarContract.Calendars.VISIBLE} = 1"
-        val cursor = context.contentResolver.query(
-            CalendarContract.Calendars.CONTENT_URI,
-            projection,
-            selection,
-            null,
-            null
-        )
-        cursor?.use {
-            while (it.moveToNext()) {
-                val id = it.getString(0)
-                val isPrimary = it.getInt(1)
-                if (isPrimary == 1) return id
+    private fun openInsertEventComposer(context: Context, title: String): LocalResponse {
+        return try {
+            val intent = Intent(Intent.ACTION_INSERT).apply {
+                data = CalendarContract.Events.CONTENT_URI
+                putExtra(CalendarContract.Events.TITLE, title)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
-            // If no primary, return first visible
-            if (it.moveToFirst()) return it.getString(0)
+            context.startActivity(intent)
+            LocalResponse("Opening calendar to add event.", "calendar_open")
+        } catch (_: Exception) {
+            LocalResponse("Couldn't open calendar.", "calendar_error")
         }
-        return null
     }
 
-    private fun getUpcomingEvents(context: Context, daysAhead: Int): List<String> {
-        val start = System.currentTimeMillis()
-        val end = start + daysAhead.toLong() * 24 * 60 * 60 * 1000
+    private fun openCalendar(context: Context): LocalResponse {
+        return try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                data = Uri.parse("content://com.android.calendar/time/")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            if (intent.resolveActivity(context.packageManager) != null) {
+                context.startActivity(intent)
+                LocalResponse("Opening calendar.", "calendar_open")
+            } else {
+                openInsertEventComposer(context, "")
+            }
+        } catch (_: Exception) {
+            LocalResponse("Couldn't open calendar.", "calendar_error")
+        }
+    }
 
+    private fun addEvent(context: Context, title: String): LocalResponse {
+        if (title.isBlank()) return LocalResponse("What's the event called?", "calendar_add")
+
+        val eventStart = parseEventTime(title)
+        val eventEnd = eventStart + 60 * 60 * 1000L
+
+        val calendarId = getDefaultCalendarId(context)
+            ?: return openInsertEventComposer(context, title)
+
+        return try {
+            val values = ContentValues().apply {
+                put(CalendarContract.Events.DTSTART, eventStart)
+                put(CalendarContract.Events.DTEND, eventEnd)
+                put(CalendarContract.Events.TITLE, title)
+                put(CalendarContract.Events.CALENDAR_ID, calendarId)
+                put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
+            }
+            val uri = context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
+            if (uri != null) {
+                val fmt = SimpleDateFormat("EEE d MMM 'at' h:mm a", Locale.getDefault())
+                LocalResponse("Added: $title on ${fmt.format(Date(eventStart))}.", "calendar_added",
+                    mapOf("title" to title, "start" to eventStart.toString()))
+            } else {
+                openInsertEventComposer(context, title)
+            }
+        } catch (_: Exception) {
+            openInsertEventComposer(context, title)
+        }
+    }
+
+    private fun queryEvents(context: Context, window: String): LocalResponse {
+        val now = System.currentTimeMillis()
+        val end = when (window) {
+            "today" -> now + 24L * 60 * 60 * 1000
+            "this week" -> now + 7L * 24 * 60 * 60 * 1000
+            "next week" -> now + 14L * 24 * 60 * 60 * 1000
+            else -> now + 48L * 60 * 60 * 1000 // tomorrow → 2 days
+        }
+        val events = getUpcomingEvents(context, now, end)
+        if (events.isEmpty()) return LocalResponse("No events $window.", "calendar_empty")
+        return LocalResponse(events.take(5).joinToString(". "), "calendar_events")
+    }
+
+    private fun getDefaultCalendarId(context: Context): Long? {
+        val projection = arrayOf(
+            CalendarContract.Calendars._ID,
+            CalendarContract.Calendars.IS_PRIMARY,
+            CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL
+        )
+        val selection = "${CalendarContract.Calendars.VISIBLE} = 1 AND " +
+            "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ${CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR}"
+        return try {
+            val cursor = context.contentResolver.query(
+                CalendarContract.Calendars.CONTENT_URI, projection, selection, null, null
+            ) ?: return null
+            cursor.use {
+                var firstWritable: Long? = null
+                while (it.moveToNext()) {
+                    val id = it.getLong(0)
+                    val primary = it.getInt(1)
+                    if (primary == 1) return id
+                    if (firstWritable == null) firstWritable = id
+                }
+                firstWritable
+            }
+        } catch (_: SecurityException) { null }
+    }
+
+    private fun getUpcomingEvents(context: Context, start: Long, end: Long): List<String> {
         val projection = arrayOf(
             CalendarContract.Events.TITLE,
-            CalendarContract.Events.DTSTART,
-            CalendarContract.Events.DTEND
+            CalendarContract.Events.DTSTART
         )
         val selection = "${CalendarContract.Events.DTSTART} >= ? AND ${CalendarContract.Events.DTSTART} <= ?"
-        val selectionArgs = arrayOf(start.toString(), end.toString())
-        val sortOrder = "${CalendarContract.Events.DTSTART} ASC"
+        val args = arrayOf(start.toString(), end.toString())
+        val sort = "${CalendarContract.Events.DTSTART} ASC"
 
         val events = mutableListOf<String>()
-        val dateFormat = SimpleDateFormat("EEE, MMM d 'at' h:mm a", Locale.getDefault())
-
-        context.contentResolver.query(
-            CalendarContract.Events.CONTENT_URI,
-            projection,
-            selection,
-            selectionArgs,
-            sortOrder
-        )?.use { cursor ->
-            while (cursor.moveToNext()) {
-                val title = cursor.getString(0) ?: "Untitled"
-                val startMs = cursor.getLong(1)
-                val startStr = dateFormat.format(Date(startMs))
-                events.add("$title at $startStr")
+        val fmt = SimpleDateFormat("EEE 'at' h:mm a", Locale.getDefault())
+        try {
+            context.contentResolver.query(
+                CalendarContract.Events.CONTENT_URI, projection, selection, args, sort
+            )?.use {
+                while (it.moveToNext()) {
+                    val title = it.getString(0) ?: "Untitled"
+                    val ts = it.getLong(1)
+                    events.add("$title ${fmt.format(Date(ts))}")
+                }
             }
-        }
+        } catch (_: SecurityException) { /* permission gone */ }
         return events
     }
 
-    private fun parseEventTime(text: String): Long? {
+    /**
+     * Parse a date+time out of free text. Falls back to tomorrow 9am if
+     * nothing recognisable is found.
+     */
+    private fun parseEventTime(text: String): Long {
         val now = LocalDate.now()
-        val nowTime = LocalTime.now()
         var targetDate: LocalDate? = null
-        var targetTime: LocalTime = LocalTime.of(9, 0) // default to 9am
+        var targetTime: LocalTime = LocalTime.of(9, 0)
+        val lower = text.lowercase()
 
-        val lowerText = text.lowercase()
-
-        // Check for "tomorrow"
-        if (lowerText.contains("tomorrow")) {
-            targetDate = now.plusDays(1)
-        }
-        // Check for "today"
-        else if (lowerText.contains("today")) {
-            targetDate = now
-        }
-        // Check for "next week"
-        else if (Regex("""next\s+week""", RegexOption.IGNORE_CASE).containsMatchIn(lowerText)) {
-            targetDate = now.plusWeeks(1)
-        }
-        // Check for "in X days/weeks"
+        // Relative phrases
+        if (lower.contains("tomorrow")) targetDate = now.plusDays(1)
+        else if (lower.contains("today")) targetDate = now
+        else if (Regex("""next\s+week""").containsMatchIn(lower)) targetDate = now.plusWeeks(1)
         else {
-            val inDaysMatch = Regex("""in\s+(\d+)\s+(day|days)""", RegexOption.IGNORE_CASE).find(lowerText)
-            if (inDaysMatch != null) {
-                val days = inDaysMatch.groupValues[1].toIntOrNull() ?: 0
-                targetDate = now.plusDays(days.toLong())
+            Regex("""in\s+(\d+)\s+days?""").find(lower)?.let {
+                targetDate = now.plusDays(it.groupValues[1].toLong())
             }
-            val inWeeksMatch = Regex("""in\s+(\d+)\s+(week|weeks)""", RegexOption.IGNORE_CASE).find(lowerText)
-            if (inWeeksMatch != null) {
-                val weeks = inWeeksMatch.groupValues[1].toIntOrNull() ?: 0
-                targetDate = now.plusWeeks(weeks.toLong())
+            Regex("""in\s+(\d+)\s+weeks?""").find(lower)?.let {
+                targetDate = now.plusWeeks(it.groupValues[1].toLong())
             }
         }
 
-        // Check for specific weekday names
-        val dayOfWeekMap = mapOf(
-            "monday" to DayOfWeek.MONDAY,
-            "tuesday" to DayOfWeek.TUESDAY,
-            "wednesday" to DayOfWeek.WEDNESDAY,
-            "thursday" to DayOfWeek.THURSDAY,
-            "friday" to DayOfWeek.FRIDAY,
-            "saturday" to DayOfWeek.SATURDAY,
+        // Weekday names — "next monday", "monday", "this friday".
+        val days = mapOf(
+            "monday" to DayOfWeek.MONDAY, "tuesday" to DayOfWeek.TUESDAY,
+            "wednesday" to DayOfWeek.WEDNESDAY, "thursday" to DayOfWeek.THURSDAY,
+            "friday" to DayOfWeek.FRIDAY, "saturday" to DayOfWeek.SATURDAY,
             "sunday" to DayOfWeek.SUNDAY
         )
+        for ((name, dow) in days) {
+            val rx = Regex("""(next\s+|this\s+)?$name""")
+            val m = rx.find(lower) ?: continue
+            val isNext = m.groupValues[1].trim() == "next"
+            val base = targetDate ?: now
+            targetDate = if (isNext) base.with(TemporalAdjusters.next(dow))
+                         else base.with(TemporalAdjusters.nextOrSame(dow))
+            break
+        }
 
-        for ((dayName, dayOfWeek) in dayOfWeekMap) {
-            val pattern = Regex("""(next\s+)?$dayName""", RegexOption.IGNORE_CASE)
-            val match = pattern.find(lowerText)
-            if (match != null) {
-                targetDate = if (match.groupValues[1].isNotEmpty()) {
-                    // "next monday" etc
-                    now.with(TemporalAdjusters.next(dayOfWeek))
-                } else {
-                    // "next week tuesday" or just weekday name
-                    if (targetDate == null) {
-                        now.with(TemporalAdjusters.nextOrSame(dayOfWeek))
-                    } else {
-                        targetDate.with(TemporalAdjusters.nextOrSame(dayOfWeek))
-                    }
-                }
-                break
+        // Month + day like "may 15"
+        Regex("""(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?""")
+            .find(lower)?.let { m ->
+                val monthName = m.groupValues[1].replaceFirstChar { it.uppercase() }
+                val day = m.groupValues[2].toIntOrNull() ?: 1
+                try {
+                    val fmt = DateTimeFormatter.ofPattern("MMMM d yyyy", Locale.ENGLISH)
+                    val candidate = LocalDate.parse("$monthName $day ${now.year}", fmt)
+                    targetDate = if (candidate.isBefore(now)) candidate.plusYears(1) else candidate
+                } catch (_: Exception) { /* ignore malformed */ }
             }
-        }
 
-        // Check for month day pattern (e.g., "may 15th", "january 5")
-        try {
-            val monthDayMatch = Regex("""(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?""", RegexOption.IGNORE_CASE).find(lowerText)
-            if (monthDayMatch != null) {
-                val monthStr = monthDayMatch.groupValues[1].lowercase()
-                val day = monthDayMatch.groupValues[2].toIntOrNull() ?: 1
-                val month = when (monthStr) {
-                    "january" -> 1; "february" -> 2; "march" -> 3; "april" -> 4
-                    "may" -> 5; "june" -> 6; "july" -> 7; "august" -> 8
-                    "september" -> 9; "october" -> 10; "november" -> 11; "december" -> 12
-                    else -> 1
-                }
-                val formatter = DateTimeFormatter.ofPattern("MMMM d", Locale.ENGLISH)
-                val parsedDate = LocalDate.parse("${monthStr.replaceFirstChar { it.uppercase() }} $day", formatter)
-                // If the date is in the past, schedule for next year
-                targetDate = if (parsedDate.isBefore(now)) {
-                    parsedDate.plusYears(1)
-                } else {
-                    parsedDate
-                }
-            }
-        } catch (e: Exception) {
-            // Fall through - keep targetDate as is
-        }
+        if (targetDate == null) targetDate = now.plusDays(1)
 
-        // If no date found, default to tomorrow
-        if (targetDate == null) {
-            targetDate = now.plusDays(1)
-        }
-
-        // Parse time from text
-        val timeMatch = Regex("""(\d{1,2})(?::(\d{2}))?\s*(am|pm)?""", RegexOption.IGNORE_CASE).find(lowerText)
-        if (timeMatch != null) {
-            var hour = timeMatch.groupValues[1].toIntOrNull() ?: 9
-            val minute = timeMatch.groupValues[2].toIntOrNull() ?: 0
-            val period = timeMatch.groupValues[3].lowercase()
-
+        // Time — "at 3pm", "3:30pm", "15:30", "half past 4"
+        Regex("""(?:at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?""").find(lower)?.let { m ->
+            var hour = m.groupValues[1].toInt()
+            val minute = m.groupValues[2].toInt()
+            val period = m.groupValues[3].lowercase()
             if (period == "pm" && hour < 12) hour += 12
             if (period == "am" && hour == 12) hour = 0
-
             targetTime = LocalTime.of(hour.coerceIn(0, 23), minute.coerceIn(0, 59))
+        } ?: Regex("""(?:at\s+)?(\d{1,2})\s*(am|pm)""").find(lower)?.let { m ->
+            var hour = m.groupValues[1].toInt()
+            val period = m.groupValues[2].lowercase()
+            if (period == "pm" && hour < 12) hour += 12
+            if (period == "am" && hour == 12) hour = 0
+            targetTime = LocalTime.of(hour.coerceIn(0, 23), 0)
         }
 
-        // Combine date and time into ZonedDateTime and convert to epoch millis
-        val zonedDateTime = targetDate.atTime(targetTime).atZone(ZoneId.systemDefault())
-        return zonedDateTime.toInstant().toEpochMilli()
+        return targetDate!!.atTime(targetTime).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
     }
 }

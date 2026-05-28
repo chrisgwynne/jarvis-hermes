@@ -1,10 +1,15 @@
 package com.jarvis.hermes
 
 import android.os.Bundle
+import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.jarvis.hermes.databinding.ActivityMemoesBinding
 
 /**
@@ -29,10 +34,7 @@ class MemoesActivity : AppCompatActivity() {
     }
 
     private fun setupUI() {
-        binding.btnBack.setOnClickListener {
-            finish()
-        }
-
+        binding.btnBack.setOnClickListener { finish() }
         binding.recyclerMemos.layoutManager = LinearLayoutManager(this)
     }
 
@@ -58,7 +60,7 @@ class MemoesActivity : AppCompatActivity() {
 
     private fun playMemo(memo: VoiceMemoManager.Memo) {
         if (VoiceMemoManager.playMemo(this, memo.id)) {
-            Toast.makeText(this, "Playing: ${memo.timestamp}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Playing memo", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(this, "Could not play memo", Toast.LENGTH_SHORT).show()
         }
@@ -81,13 +83,13 @@ class MemoAdapter(
     private val memos: List<VoiceMemoManager.Memo>,
     private val onPlayClick: (VoiceMemoManager.Memo) -> Unit,
     private val onDeleteClick: (VoiceMemoManager.Memo) -> Unit
-) : androidx.recyclerview.widget.RecyclerView.Adapter<MemoAdapter.ViewHolder>() {
+) : RecyclerView.Adapter<MemoAdapter.ViewHolder>() {
 
-    class ViewHolder(view: View) : androidx.recyclerview.widget.RecyclerView.ViewHolder(view) {
-        val textTimestamp: android.widget.TextView = view.findViewById(R.id.textTimestamp)
-        val textDuration: android.widget.TextView = view.findViewById(R.id.textDuration)
-        val btnPlay: android.widget.Button = view.findViewById(R.id.btnPlay)
-        val btnDelete: android.widget.Button = view.findViewById(R.id.btnDelete)
+    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val textTimestamp: TextView = view.findViewById(R.id.textTimestamp)
+        val textDuration: TextView = view.findViewById(R.id.textDuration)
+        val btnPlay: Button = view.findViewById(R.id.btnPlay)
+        val btnDelete: Button = view.findViewById(R.id.btnDelete)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -98,10 +100,8 @@ class MemoAdapter(
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val memo = memos[position]
-
         holder.textTimestamp.text = VoiceMemoManager.formatTimestamp(memo.timestamp)
         holder.textDuration.text = VoiceMemoManager.formatDuration(memo.durationMs)
-
         holder.btnPlay.setOnClickListener { onPlayClick(memo) }
         holder.btnDelete.setOnClickListener { onDeleteClick(memo) }
     }

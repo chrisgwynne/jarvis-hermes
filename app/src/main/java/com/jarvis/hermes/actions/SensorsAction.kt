@@ -102,33 +102,32 @@ object SensorsAction {
     }
 
     private fun getBatteryLevel(context: Context): LocalResponse {
-        val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val level = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val status = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS)
-
-        val isCharging = status == BatteryManager.BATTERY_PROPERTY_STATUS_CHARGING ||
-                        status == BatteryManager.BATTERY_PROPERTY_STATUS_FULL
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val status = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS)
+        // BATTERY_PROPERTY_STATUS returns BATTERY_STATUS_* values.
+        val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                         status == BatteryManager.BATTERY_STATUS_FULL
 
         val statusText = when {
             isCharging && level == 100 -> "fully charged"
             isCharging -> "charging at $level percent"
-            level <= 20 -> " critically low at $level percent"
-            else -> "at $level percent"
+            level in 1..20 -> "critically low at $level percent"
+            level > 0 -> "at $level percent"
+            else -> "unknown"
         }
-
         return LocalResponse("Battery $statusText.", "sensors_battery",
             mapOf("level" to level.toString(), "charging" to isCharging.toString()))
     }
 
     private fun getChargingStatus(context: Context): LocalResponse {
-        val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val status = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS)
-
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val status = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS)
         return when (status) {
-            BatteryManager.BATTERY_PROPERTY_STATUS_CHARGING -> LocalResponse("Phone is charging.", "sensors_charging")
-            BatteryManager.BATTERY_PROPERTY_STATUS_DISCHARGING -> LocalResponse("Phone is not charging.", "sensors_charging")
-            BatteryManager.BATTERY_PROPERTY_STATUS_FULL -> LocalResponse("Phone is fully charged.", "sensors_charging")
-            BatteryManager.BATTERY_PROPERTY_STATUS_NOT_CHARGING -> LocalResponse("Phone is not executing.", "sensors_charging")
+            BatteryManager.BATTERY_STATUS_CHARGING -> LocalResponse("Phone is charging.", "sensors_charging")
+            BatteryManager.BATTERY_STATUS_DISCHARGING -> LocalResponse("Phone is not charging.", "sensors_charging")
+            BatteryManager.BATTERY_STATUS_FULL -> LocalResponse("Phone is fully charged.", "sensors_charging")
+            BatteryManager.BATTERY_STATUS_NOT_CHARGING -> LocalResponse("Phone is not charging.", "sensors_charging")
             else -> LocalResponse("Unknown charging status.", "sensors_charging")
         }
     }
@@ -202,12 +201,8 @@ object SensorsAction {
 
     private fun readTemperature(context: Context): LocalResponse {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_TEMPERATURE)
-
-        if (sensor == null) {
-            return LocalResponse("Temperature sensor not available.", "sensors_error")
-        }
-
+        val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_AMBIENT_TEMPERATURE)
+        if (sensor == null) return LocalResponse("Temperature sensor not available.", "sensors_error")
         return LocalResponse("Temperature sensor available.", "sensors_temperature")
     }
 

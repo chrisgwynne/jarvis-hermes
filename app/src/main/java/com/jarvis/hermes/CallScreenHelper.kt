@@ -1,6 +1,7 @@
 package com.jarvis.hermes
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -9,274 +10,217 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
-import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
-import android.widget.Toast
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * Call screening helper.
- * Monitors incoming calls and announces caller via TTS.
- * Handles "answer", "reject", "voicemail" voice commands.
+ *
+ * Listens for incoming-call state. On API <31 we use the legacy PHONE_STATE
+ * broadcast. On API 31+ that broadcast is deprecated and only the dialer app
+ * receives EXTRA_INCOMING_NUMBER, so we switch to TelephonyCallback.
+ *
+ * When an incoming call rings, we record the caller (looked up in contacts if
+ * possible) into SharedPreferences. VoiceService picks it up and speaks it.
+ *
+ * Accepting/rejecting calls requires:
+ *  - API 26+: ANSWER_PHONE_CALLS runtime permission for acceptRingingCall.
+ *  - API 28+: ANSWER_PHONE_CALLS for endCall.
  */
 object CallScreenHelper {
 
     private const val PREFS_NAME = "jarvis_hermes"
     private const val KEY_CALL_SCREENING_ENABLED = "call_screening_enabled"
-    private const val KEY_LAST_INCOMING_CALL = "last_incoming_call"
     private const val KEY_CALL_ACTIVE = "call_active"
     private const val KEY_CALL_NUMBER = "call_number"
     private const val KEY_CALL_NAME = "call_name"
+    private const val KEY_INCOMING_ANNOUNCEMENT = "incoming_call_announcement"
 
     private var context: Context? = null
-    private var phoneStateListener: PhoneStateListener? = null
-    private var telephonyManager: TelephonyManager? = null
     private var callReceiver: BroadcastReceiver? = null
-    private var isInitialized = false
+    private var telephonyManager: TelephonyManager? = null
+    private var telephonyCallback: Any? = null // TelephonyCallback at runtime on S+
+    @Suppress("DEPRECATION")
+    private var phoneStateListener: PhoneStateListener? = null
+    private val executor: Executor = Executors.newSingleThreadExecutor()
 
-    /**
-     * Initialize call screening. Call from VoiceService.onCreate().
-     */
     fun init(ctx: Context) {
         context = ctx.applicationContext
-        registerCallReceiver()
-        isInitialized = true
+        telephonyManager = ctx.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        registerCallListening()
     }
 
-    /**
-     * Cleanup. Call from VoiceService.onDestroy().
-     */
     fun cleanup() {
-        unregisterCallReceiver()
-        unregisterPhoneStateListener()
-        isInitialized = false
+        unregisterCallListening()
     }
 
-    /**
-     * Check if call screening is enabled.
-     */
-    fun isCallScreeningEnabled(ctx: Context): Boolean {
-        return ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    fun isCallScreeningEnabled(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_CALL_SCREENING_ENABLED, true)
-    }
 
-    /**
-     * Enable or disable call screening.
-     */
     fun setCallScreeningEnabled(ctx: Context, enabled: Boolean) {
         ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_CALL_SCREENING_ENABLED, enabled)
-            .apply()
+            .edit().putBoolean(KEY_CALL_SCREENING_ENABLED, enabled).apply()
     }
 
-    /**
-     * Check if there's an active incoming call.
-     */
-    fun isCallActive(ctx: Context): Boolean {
-        return ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    fun isCallActive(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_CALL_ACTIVE, false)
-    }
 
-    /**
-     * Answer the incoming call.
-     */
     fun answerCall(ctx: Context) {
+        if (!hasPermission(ctx, Manifest.permission.ANSWER_PHONE_CALLS)) return
         try {
-            val telecomManager = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-            if (ActivityCompat.checkSelfPermission(ctx, Manifest.permission.ANSWER_PHONE_CALLS) ==
-                PackageManager.PERMISSION_GRANTED) {
-                telecomManager.acceptRingingCall()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(ctx, "Could not answer call", Toast.LENGTH_SHORT).show()
-        }
+            val tm = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+            tm.acceptRingingCall()
+        } catch (_: Exception) {}
     }
 
-    /**
-     * Reject the incoming call.
-     */
     fun rejectCall(ctx: Context) {
+        if (!hasPermission(ctx, Manifest.permission.ANSWER_PHONE_CALLS)) return
         try {
-            val telecomManager = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-            if (ActivityCompat.checkSelfPermission(ctx, Manifest.permission.ANSWER_PHONE_CALLS) ==
-                PackageManager.PERMISSION_GRANTED) {
-                telecomManager.endCall()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(ctx, "Could not reject call", Toast.LENGTH_SHORT).show()
-        }
+            val tm = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+            @Suppress("DEPRECATION")
+            tm.endCall()
+        } catch (_: Exception) {}
     }
 
-    /**
-     * Send to voicemail.
-     */
-    fun sendToVoicemail(ctx: Context) {
-        try {
-            val telecomManager = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-            if (ActivityCompat.checkSelfPermission(ctx, Manifest.permission.ANSWER_PHONE_CALLS) ==
-                PackageManager.PERMISSION_GRANTED) {
-                telecomManager.endCall()
-            }
-        } catch (e: Exception) {
-            // Fallback: just reject
-            rejectCall(ctx)
-        }
+    fun sendToVoicemail(ctx: Context) { rejectCall(ctx) }
+
+    fun getPendingAnnouncement(ctx: Context): String? =
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_INCOMING_ANNOUNCEMENT, null)
+
+    fun clearPendingAnnouncement(ctx: Context) {
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().remove(KEY_INCOMING_ANNOUNCEMENT).apply()
     }
 
-    /**
-     * Get caller name from contacts.
-     */
-    fun getCallerName(ctx: Context, phoneNumber: String): String? {
-        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) !=
-            PackageManager.PERMISSION_GRANTED) {
-            return null
-        }
+    fun hasRequiredPermissions(ctx: Context): Boolean {
+        val needed = mutableListOf(Manifest.permission.READ_PHONE_STATE)
+        needed.add(Manifest.permission.ANSWER_PHONE_CALLS)
+        return needed.all { hasPermission(ctx, it) }
+    }
 
-        try {
-            val uri = Uri.withAppendedPath(
-                ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
-                Uri.encode(phoneNumber)
-            )
-            val cursor: Cursor? = ctx.contentResolver.query(uri, arrayOf(
-                ContactsContract.PhoneLookup.DISPLAY_NAME,
-                ContactsContract.PhoneLookup.NUMBER
-            ), null, null, null)
+    private fun hasPermission(ctx: Context, perm: String) =
+        ContextCompat.checkSelfPermission(ctx, perm) == PackageManager.PERMISSION_GRANTED
 
-            cursor?.use {
-                if (it.moveToFirst()) {
-                    val nameIndex = it.getColumnIndex(ContactsContract.PhoneLookup.DISPLAY_NAME)
-                    return if (nameIndex >= 0) it.getString(nameIndex) else null
+    private fun registerCallListening() {
+        val ctx = context ?: return
+        if (!hasPermission(ctx, Manifest.permission.READ_PHONE_STATE)) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+                    override fun onCallStateChanged(state: Int) {
+                        handleCallState(state, null)
+                    }
+                }
+                telephonyCallback = cb
+                telephonyManager?.registerTelephonyCallback(executor, cb)
+            } catch (_: Exception) { /* permission revoked */ }
+        } else {
+            @Suppress("DEPRECATION")
+            val listener = object : PhoneStateListener() {
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                    handleCallState(state, phoneNumber)
                 }
             }
-        } catch (e: Exception) {
-            // Permission denied or other error
+            phoneStateListener = listener
+            @Suppress("DEPRECATION")
+            telephonyManager?.listen(listener, PhoneStateListener.LISTEN_CALL_STATE)
         }
-        return null
-    }
 
-    private fun registerCallReceiver() {
-        val ctx = context ?: return
-        if (callReceiver != null) return
-
-        callReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.action == TelephonyManager.ACTION_PHONE_STATE_CHANGED) {
-                    val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
-                    val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
-
-                    when (state) {
-                        TelephonyManager.EXTRA_STATE_RINGING -> {
-                            handleIncomingCall(context ?: return, number)
-                        }
-                        TelephonyManager.EXTRA_STATE_IDLE -> {
-                            handleCallEnded(context ?: return)
+        // Legacy broadcast also fires on older devices and gives us the number.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: Intent?) {
+                    if (intent?.action == TelephonyManager.ACTION_PHONE_STATE_CHANGED) {
+                        val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+                        val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
+                        when (state) {
+                            TelephonyManager.EXTRA_STATE_RINGING -> handleIncomingCall(ctx, number)
+                            TelephonyManager.EXTRA_STATE_IDLE -> handleCallEnded(ctx)
                         }
                     }
                 }
             }
+            callReceiver = receiver
+            try {
+                ctx.registerReceiver(receiver, IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED))
+            } catch (_: Exception) {}
         }
-
-        val filter = IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
-        ctx.registerReceiver(callReceiver, filter)
     }
 
-    private fun unregisterCallReceiver() {
-        val ctx = context ?: return
+    private fun unregisterCallListening() {
+        val ctx = context
         callReceiver?.let {
-            try {
-                ctx.unregisterReceiver(it)
-            } catch (e: Exception) {
-                // Not registered
-            }
+            try { ctx?.unregisterReceiver(it) } catch (_: Exception) {}
             callReceiver = null
         }
-    }
-
-    private fun registerPhoneStateListener() {
-        val ctx = context ?: return
-        if (phoneStateListener != null) return
-
-        telephonyManager = ctx.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-    }
-
-    private fun unregisterPhoneStateListener() {
-        phoneStateListener?.let {
-            telephonyManager?.listen(it, PhoneStateListener.LISTEN_NONE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (telephonyCallback as? TelephonyCallback)?.let {
+                try { telephonyManager?.unregisterTelephonyCallback(it) } catch (_: Exception) {}
+            }
+            telephonyCallback = null
+        } else {
+            phoneStateListener?.let {
+                @Suppress("DEPRECATION")
+                try { telephonyManager?.listen(it, PhoneStateListener.LISTEN_NONE) } catch (_: Exception) {}
+            }
             phoneStateListener = null
+        }
+    }
+
+    private fun handleCallState(state: Int, phoneNumber: String?) {
+        val ctx = context ?: return
+        when (state) {
+            TelephonyManager.CALL_STATE_RINGING -> handleIncomingCall(ctx, phoneNumber)
+            TelephonyManager.CALL_STATE_IDLE -> handleCallEnded(ctx)
         }
     }
 
     private fun handleIncomingCall(ctx: Context, number: String?) {
         if (!isCallScreeningEnabled(ctx)) return
-
-        val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putBoolean(KEY_CALL_ACTIVE, true)
-            .putString(KEY_CALL_NUMBER, number ?: "unknown")
-            .apply()
-
         val callerName = number?.let { getCallerName(ctx, it) }
-        val displayName = callerName ?: number ?: "Unknown caller"
+        val display = callerName ?: number ?: "Unknown caller"
 
-        val callerInfo = if (callerName != null) {
-            "$displayName"
-        } else {
-            displayName
-        }
-
-        // Store caller info for VoiceService to speak
-        prefs.edit()
-            .putString(KEY_CALL_NAME, callerInfo)
-            .putString("incoming_call_announcement", "Incoming call from $callerInfo. Say answer to pick up or reject to send to voicemail.")
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CALL_ACTIVE, true)
+            .putString(KEY_CALL_NUMBER, number ?: "")
+            .putString(KEY_CALL_NAME, display)
+            .putString(KEY_INCOMING_ANNOUNCEMENT, "Incoming call from $display. Say answer, reject, or voicemail.")
             .apply()
     }
 
     private fun handleCallEnded(ctx: Context) {
-        val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
+        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_CALL_ACTIVE, false)
             .remove(KEY_CALL_NUMBER)
             .remove(KEY_CALL_NAME)
-            .remove("incoming_call_announcement")
+            .remove(KEY_INCOMING_ANNOUNCEMENT)
             .apply()
     }
 
-    /**
-     * Check if we have required permissions for call screening.
-     */
-    fun hasRequiredPermissions(ctx: Context): Boolean {
-        val permissions = mutableListOf(
-            Manifest.permission.READ_PHONE_STATE
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            permissions.add(Manifest.permission.ANSWER_PHONE_CALLS)
-        }
-
-        return permissions.all {
-            ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED
-        }
-    }
-
-    /**
-     * Get pending call announcement text.
-     */
-    fun getPendingAnnouncement(ctx: Context): String? {
-        return ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString("incoming_call_announcement", null)
-    }
-
-    /**
-     * Clear pending announcement after it's been spoken.
-     */
-    fun clearPendingAnnouncement(ctx: Context) {
-        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .remove("incoming_call_announcement")
-            .apply()
+    private fun getCallerName(ctx: Context, phoneNumber: String): String? {
+        if (!hasPermission(ctx, Manifest.permission.READ_CONTACTS)) return null
+        return try {
+            val uri = Uri.withAppendedPath(
+                ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+                Uri.encode(phoneNumber)
+            )
+            val cursor: Cursor? = ctx.contentResolver.query(
+                uri,
+                arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME),
+                null, null, null
+            )
+            cursor?.use {
+                if (it.moveToFirst()) it.getString(0) else null
+            }
+        } catch (_: Exception) { null }
     }
 }

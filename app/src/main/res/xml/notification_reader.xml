@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeNotificationStateChanged"
-    android:accessibilityFeedbackFeedback="generic"
-    android:accessibilityFlags="flagReportViewIds"
-    android:accessibilityThumbnail="true"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagReportViewIds"
     android:canRetrieveWindowContent="false"
     android:description="@string/notification_reader_description"
     android:notificationTimeout="100"
-    android:settingsActivity="com.jarvis.hermes.SettingsActivity" />
+    android:settingsActivity="com.jarvis.hermes.SettingsActivity"/>

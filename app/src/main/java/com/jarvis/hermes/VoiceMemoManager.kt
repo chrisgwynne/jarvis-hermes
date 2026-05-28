@@ -61,10 +61,10 @@ object VoiceMemoManager {
 
             mediaRecorder?.apply {
                 setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.M4A)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioEncodingBitRate(128000)
-                setAudioSamplingRate(44100)
+                setAudioEncodingBitRate(128_000)
+                setAudioSamplingRate(44_100)
                 setOutputFile(filePath)
                 setMaxDuration(MAX_MEMO_DURATION_MS.toInt())
 

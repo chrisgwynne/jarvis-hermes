@@ -4,30 +4,42 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.widget.ArrayAdapter
+import android.widget.LinearLayout
+import android.widget.Spinner
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.jarvis.hermes.databinding.ActivitySettingsBinding
 import com.jarvis.hermes.service.VoiceService
+import java.util.Locale
 
 /**
  * Settings activity for Jarvis Hermes.
+ *
+ * API key + sensitive prefs are stored in EncryptedSharedPreferences and
+ * migrated on first run.
  */
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
+    private lateinit var languageSpinner: Spinner
+    private lateinit var languageLabels: List<Pair<String, Locale>>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        EncryptedPrefs.migrateFromPlain(this, "jarvis_hermes", listOf("api_key"))
+        injectExtras()
         loadSettings()
         setupUI()
     }
 
     private fun loadSettings() {
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        val secure = EncryptedPrefs.get(this)
         binding.inputHermesIp.setText(prefs.getString("hermes_ip", ""))
-        binding.inputApiKey.setText(prefs.getString("api_key", ""))
+        binding.inputApiKey.setText(secure.getString("api_key", ""))
         binding.sliderSilenceDelay.value = prefs.getLong("silence_delay", 1500L).toFloat()
         binding.switchOfflineStt.isChecked = prefs.getBoolean("use_offline_stt", true)
         binding.switchWakeWord.isChecked = prefs.getBoolean("wake_word_mode", false)
@@ -41,6 +53,7 @@ class SettingsActivity : AppCompatActivity() {
             prefs.getString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, SystemPromptBuilder.getDefault())
         )
         setupBluetoothDeviceSpinner()
+        applySavedLanguage()
     }
 
     private fun setupBluetoothDeviceSpinner() {
@@ -55,6 +68,108 @@ class SettingsActivity : AppCompatActivity() {
                 else -> 0
             }
         )
+    }
+
+    /**
+     * The XML layout is fixed — append the extras (language picker,
+     * driving mode toggle, metrics link, onboarding link) programmatically
+     * so we don't have to touch the resource layout.
+     */
+    private fun injectExtras() {
+        val scroll = binding.root as android.view.ViewGroup
+        val container = scroll.getChildAt(0) as LinearLayout
+
+        // ---- TTS language ----
+        container.addView(sectionLabel("TTS Language"))
+        val langRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        langRow.addView(rowLabel("Voice"))
+        languageLabels = listOf(
+            "System default" to Locale.getDefault(),
+            "English (UK)" to Locale.UK,
+            "English (US)" to Locale.US,
+            "English (Australia)" to Locale("en", "AU"),
+            "English (India)" to Locale("en", "IN"),
+            "German" to Locale.GERMAN,
+            "French" to Locale.FRENCH,
+            "Spanish" to Locale("es", "ES"),
+            "Italian" to Locale.ITALIAN,
+            "Dutch" to Locale("nl", "NL")
+        )
+        languageSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@SettingsActivity,
+                android.R.layout.simple_spinner_item,
+                languageLabels.map { it.first }).also {
+                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+        }
+        langRow.addView(languageSpinner, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        container.addView(langRow)
+
+        // ---- Driving mode (forced) ----
+        container.addView(sectionLabel("Driving Mode"))
+        val drivingRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        drivingRow.addView(rowLabel("Force driving mode"))
+        val drivingSwitch = com.google.android.material.switchmaterial.SwitchMaterial(this).apply {
+            isChecked = DrivingModeManager.isActive(this@SettingsActivity)
+        }
+        drivingRow.addView(drivingSwitch, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        container.addView(drivingRow)
+        drivingSwitch.setOnCheckedChangeListener { _, checked ->
+            DrivingModeManager.setForced(this, checked)
+        }
+
+        // ---- Metrics + Onboarding links ----
+        container.addView(sectionLabel("Diagnostics"))
+        val metricsBtn = android.widget.Button(this).apply {
+            text = "Show metrics"
+            setOnClickListener { startActivity(Intent(this@SettingsActivity, MetricsActivity::class.java)) }
+        }
+        container.addView(metricsBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 12 })
+
+        val onboardingBtn = android.widget.Button(this).apply {
+            text = "Replay onboarding"
+            setOnClickListener { startActivity(Intent(this@SettingsActivity, OnboardingActivity::class.java)) }
+        }
+        container.addView(onboardingBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 12 })
+    }
+
+    private fun sectionLabel(text: String): TextView = TextView(this).apply {
+        this.text = text
+        setTextColor(0xFF8B949E.toInt())
+        textSize = 13f
+        val lp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 24; bottomMargin = 8 }
+        layoutParams = lp
+    }
+
+    private fun rowLabel(text: String): TextView = TextView(this).apply {
+        this.text = text
+        setTextColor(0xFFE6EDF3.toInt())
+        textSize = 14f
+        val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        layoutParams = lp
+    }
+
+    private fun applySavedLanguage() {
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        val saved = prefs.getString("tts_locale", "default")
+        val idx = languageLabels.indexOfFirst {
+            when (saved) {
+                "default" -> it.first == "System default"
+                else -> it.second.toLanguageTag() == saved
+            }
+        }.coerceAtLeast(0)
+        languageSpinner.setSelection(idx)
     }
 
     private fun setupUI() {
@@ -73,7 +188,6 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun isValidHost(host: String): Boolean {
         if (host.isBlank()) return false
-        // Accept IPv4 (any range, not just Tailscale) and a basic hostname.
         if (host.matches(Regex("""^(\d{1,3}\.){3}\d{1,3}$"""))) {
             return host.split(".").all { it.toIntOrNull() in 0..255 }
         }
@@ -87,7 +201,6 @@ class SettingsActivity : AppCompatActivity() {
             Toast.makeText(this, "Invalid host", Toast.LENGTH_SHORT).show()
             return
         }
-
         val key = binding.inputApiKey.text.toString().trim()
         val silenceDelayVal = binding.sliderSilenceDelay.value.toLong()
         val useOffline = binding.switchOfflineStt.isChecked
@@ -102,7 +215,6 @@ class SettingsActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
         prefs.edit()
             .putString("hermes_ip", ip)
-            .putString("api_key", key)
             .putLong("silence_delay", silenceDelayVal)
             .putBoolean("use_offline_stt", useOffline)
             .putBoolean("wake_word_mode", wakeWord)
@@ -112,7 +224,11 @@ class SettingsActivity : AppCompatActivity() {
             .putBoolean("call_screening_enabled", callScreening)
             .putString("wake_phrase", wakePhraseText)
             .putString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, systemPrompt)
+            .putString("tts_locale", selectedTtsLocaleTag())
             .apply()
+
+        // Persist API key encrypted, never in plain prefs.
+        EncryptedPrefs.get(this).edit().putString("api_key", key).apply()
 
         val deviceType = when (binding.spinnerBtDeviceType.selectedItemPosition) {
             1 -> BluetoothAutoManager.DEVICE_TYPE_CAR
@@ -121,14 +237,16 @@ class SettingsActivity : AppCompatActivity() {
         }
         BluetoothAutoManager.setDeviceTypes(this, deviceType)
 
-        // Notify VoiceService to reload its config (no-op if not running).
         val svc = Intent(this, VoiceService::class.java).apply { action = "SETTINGS_UPDATED" }
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startService(svc) // safe even though Foreground rules
-            else startService(svc)
-        } catch (_: Exception) {}
+        try { startService(svc) } catch (_: Exception) {}
 
         Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
         finish()
+    }
+
+    private fun selectedTtsLocaleTag(): String {
+        val idx = languageSpinner.selectedItemPosition.coerceAtLeast(0)
+        val (label, locale) = languageLabels[idx]
+        return if (label == "System default") "default" else locale.toLanguageTag()
     }
 }

@@ -81,6 +81,8 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        EncryptedPrefs.migrateFromPlain(this, "jarvis_hermes", listOf("api_key"))
+        maybeLaunchOnboarding()
         loadSettings()
         setupUi()
         checkPermissions()
@@ -88,10 +90,17 @@ class MainActivity : AppCompatActivity() {
         updateBatteryBanner()
     }
 
+    private fun maybeLaunchOnboarding() {
+        val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
+        if (!prefs.getBoolean("onboarding_complete", false)) {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+        }
+    }
+
     private fun loadSettings() {
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
         hermesIp = prefs.getString("hermes_ip", "") ?: ""
-        apiKey = prefs.getString("api_key", "") ?: ""
+        apiKey = EncryptedPrefs.get(this).getString("api_key", "") ?: ""
     }
 
     private fun hermesBaseUrl(): String =

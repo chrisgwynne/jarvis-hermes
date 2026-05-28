@@ -84,6 +84,20 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
         updateConnectionState("connected")
     }
 
+    /**
+     * Seed the conversation with prior turns. Used by "continue last
+     * conversation" — VoiceService passes the user/assistant pairs from
+     * the most recent saved session and the LLM picks up where we left
+     * off.
+     */
+    fun seedHistory(turns: List<Pair<String, String>>) {
+        val msgs = cachedMessagesJson ?: return
+        for ((user, assistant) in turns) {
+            if (user.isNotBlank()) msgs.put(JSONObject().put("role", "user").put("content", user))
+            if (assistant.isNotBlank()) msgs.put(JSONObject().put("role", "assistant").put("content", assistant))
+        }
+    }
+
     fun resetConversation() {
         cachedMessagesJson = null
         lastAssistantMessage = ""

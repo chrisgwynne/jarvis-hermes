@@ -14,11 +14,13 @@ import java.util.Locale
 
 /**
  * RecyclerView adapter for the sessions list. Each row shows title, time
- * ago, message count, a snippet preview, and an export button.
+ * ago, message count, a snippet preview, an export button, and a
+ * favourite toggle (tap title to toggle).
  */
 class SessionAdapter(
     private val context: Context,
-    private val sessions: List<Session>
+    private val sessions: List<Session>,
+    private val onFavouriteToggle: (Session) -> Unit = {}
 ) : RecyclerView.Adapter<SessionAdapter.VH>() {
 
     class VH(view: View) : RecyclerView.ViewHolder(view) {
@@ -38,11 +40,16 @@ class SessionAdapter(
 
     override fun onBindViewHolder(holder: VH, position: Int) {
         val session = sessions[position]
-        holder.title.text = session.title
-        holder.preview.text = session.preview.replace("You: ", "").replace("Jarvis: ", "").take(100)
+        val star = if (session.favourite) "★ " else ""
+        holder.title.text = "$star${session.title}"
+        holder.preview.text = session.preview
+            .replace("You: ", "")
+            .replace("Jarvis: ", "")
+            .take(100)
         holder.time.text = formatTime(session.timestamp)
         holder.count.text = "${session.messageCount} messages"
         holder.exportBtn.setOnClickListener { exportSession(session) }
+        holder.title.setOnClickListener { onFavouriteToggle(session) }
     }
 
     private fun exportSession(session: Session) {

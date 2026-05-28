@@ -95,6 +95,10 @@ class NotificationInterceptorService : AccessibilityService() {
 
         if (sender.isBlank() && message.isBlank()) return
 
+        // Skip banking/2FA/auth content — those should never be persisted
+        // in plain SharedPreferences nor spoken aloud.
+        if (PrivacyFilter.isSensitive(packageName, sender, message)) return
+
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         prefs.edit()
             .putString(KEY_LATEST_NOTIFICATION, "$sender|$message")

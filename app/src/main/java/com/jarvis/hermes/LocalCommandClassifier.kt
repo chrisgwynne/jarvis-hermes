@@ -61,6 +61,12 @@ object LocalCommandClassifier {
         AlarmsAction.canHandle(lower)?.let { params ->
             return AlarmsAction.execute(context, params)
         }
+        ReminderAction.canHandle(lower)?.let { params ->
+            return ReminderAction.execute(context, params)
+        }
+        NotificationReplyAction.canHandle(lower)?.let { params ->
+            return NotificationReplyAction.execute(context, params)
+        }
 
         return null
     }

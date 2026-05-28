@@ -12,6 +12,8 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
 import com.jarvis.hermes.LocalResponse
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Location action handler: where am I, share location, track.
@@ -79,68 +81,82 @@ object LocationAction {
     @Suppress("MissingPermission")
     private fun getCurrentLocation(context: Context): LocalResponse {
         val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
-        
+        var result: LocalResponse = LocalResponse("Couldn't get location.", "location_error")
+        val latch = CountDownLatch(1)
+
         try {
             fusedLocationClient.lastLocation.addOnSuccessListener { location ->
                 if (location != null) {
-                    val msg = "Your location is latitude ${location.latitude}, longitude ${location.longitude}."
-                    // Don't wait, just respond
-                } else {
-                    // Fall through to open maps
+                    result = LocalResponse("Your location is latitude ${location.latitude}, longitude ${location.longitude}.", "location_current")
                 }
+                latch.countDown()
             }.addOnFailureListener {
-                // Fall through
+                result = LocalResponse("Location unavailable.", "location_error")
+                latch.countDown()
             }
+            latch.await(10, TimeUnit.SECONDS)
         } catch (e: Exception) {
-            // Fall through
+            result = LocalResponse("Location error.", "location_error")
         }
 
-        // Fallback: open maps
-        return openMaps(context)
+        return result
     }
 
     @Suppress("MissingPermission")
     private fun getLatLong(context: Context): LocalResponse {
         val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
-        
+        var result: LocalResponse = LocalResponse("Couldn't get coordinates.", "location_error")
+        val latch = CountDownLatch(1)
+
         try {
             fusedLocationClient.lastLocation.addOnSuccessListener { location ->
                 if (location != null) {
-                    return LocalResponse(
+                    result = LocalResponse(
                         "Latitude ${location.latitude}, longitude ${location.longitude}",
                         "location_coordinates"
                     )
                 }
+                latch.countDown()
+            }.addOnFailureListener {
+                result = LocalResponse("Location unavailable.", "location_error")
+                latch.countDown()
             }
+            latch.await(10, TimeUnit.SECONDS)
         } catch (e: Exception) {
-            return LocalResponse("Couldn't get coordinates.", "location_error")
+            result = LocalResponse("Location error.", "location_error")
         }
 
-        return openMaps(context)
+        return result
     }
 
+    @Suppress("MissingPermission")
     private fun shareLocation(context: Context): LocalResponse {
         val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
+        var result: LocalResponse = LocalResponse("Opening location sharing.", "location_share")
+        val latch = CountDownLatch(1)
 
         try {
             fusedLocationClient.lastLocation.addOnSuccessListener { location ->
                 if (location != null) {
-                    val geoUri = "geo:${location.latitude},${location.longitude}?q=${location.latitude},${location.longitude}"
                     val shareIntent = Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"
                         putExtra(Intent.EXTRA_TEXT, "My location: https://maps.google.com/?q=${location.latitude},${location.longitude}")
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     }
                     context.startActivity(Intent.createChooser(shareIntent, "Share location"))
+                    result = LocalResponse("Sharing location.", "location_share")
                 }
+                latch.countDown()
             }.addOnFailureListener {
-                openMaps(context)
+                result = LocalResponse("Location unavailable.", "location_error")
+                latch.countDown()
             }
+            latch.await(10, TimeUnit.SECONDS)
         } catch (e: Exception) {
-            openMaps(context)
+            result = LocalResponse("Location error.", "location_error")
         }
 
-        return LocalResponse("Opening location sharing.", "location_share")
+        return result
     }
 
     private fun openMaps(context: Context): LocalResponse {

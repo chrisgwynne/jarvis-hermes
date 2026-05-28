@@ -9,6 +9,12 @@ import android.provider.CalendarContract
 import androidx.core.app.ActivityCompat
 import com.jarvis.hermes.LocalResponse
 import java.text.SimpleDateFormat
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.time.temporal.TemporalAdjusters
+import java.time.ZoneId
 import java.util.*
 
 /**
@@ -177,30 +183,114 @@ object CalendarAction {
     }
 
     private fun parseEventTime(text: String): Long? {
-        // Simple time parser - look for common patterns
-        val now = Calendar.getInstance()
-        
-        // Look for "tomorrow"
-        if (text.contains("tomorrow")) {
-            now.add(Calendar.DAY_OF_YEAR, 1)
+        val now = LocalDate.now()
+        val nowTime = LocalTime.now()
+        var targetDate: LocalDate? = null
+        var targetTime: LocalTime = LocalTime.of(9, 0) // default to 9am
+
+        val lowerText = text.lowercase()
+
+        // Check for "tomorrow"
+        if (lowerText.contains("tomorrow")) {
+            targetDate = now.plusDays(1)
         }
-        
-        // Look for "at X" or "at X pm/am"
-        val timeMatch = Regex("""(\d{1,2})(?::(\d{2}))?\s*(am|pm)?""", RegexOption.IGNORE_CASE).find(text)
+        // Check for "today"
+        else if (lowerText.contains("today")) {
+            targetDate = now
+        }
+        // Check for "next week"
+        else if (Regex("""next\s+week""", RegexOption.IGNORE_CASE).containsMatchIn(lowerText)) {
+            targetDate = now.plusWeeks(1)
+        }
+        // Check for "in X days/weeks"
+        else {
+            val inDaysMatch = Regex("""in\s+(\d+)\s+(day|days)""", RegexOption.IGNORE_CASE).find(lowerText)
+            if (inDaysMatch != null) {
+                val days = inDaysMatch.groupValues[1].toIntOrNull() ?: 0
+                targetDate = now.plusDays(days.toLong())
+            }
+            val inWeeksMatch = Regex("""in\s+(\d+)\s+(week|weeks)""", RegexOption.IGNORE_CASE).find(lowerText)
+            if (inWeeksMatch != null) {
+                val weeks = inWeeksMatch.groupValues[1].toIntOrNull() ?: 0
+                targetDate = now.plusWeeks(weeks.toLong())
+            }
+        }
+
+        // Check for specific weekday names
+        val dayOfWeekMap = mapOf(
+            "monday" to DayOfWeek.MONDAY,
+            "tuesday" to DayOfWeek.TUESDAY,
+            "wednesday" to DayOfWeek.WEDNESDAY,
+            "thursday" to DayOfWeek.THURSDAY,
+            "friday" to DayOfWeek.FRIDAY,
+            "saturday" to DayOfWeek.SATURDAY,
+            "sunday" to DayOfWeek.SUNDAY
+        )
+
+        for ((dayName, dayOfWeek) in dayOfWeekMap) {
+            val pattern = Regex("""(next\s+)?$dayName""", RegexOption.IGNORE_CASE)
+            val match = pattern.find(lowerText)
+            if (match != null) {
+                targetDate = if (match.groupValues[1].isNotEmpty()) {
+                    // "next monday" etc
+                    now.with(TemporalAdjusters.next(dayOfWeek))
+                } else {
+                    // "next week tuesday" or just weekday name
+                    if (targetDate == null) {
+                        now.with(TemporalAdjusters.nextOrSame(dayOfWeek))
+                    } else {
+                        targetDate.with(TemporalAdjusters.nextOrSame(dayOfWeek))
+                    }
+                }
+                break
+            }
+        }
+
+        // Check for month day pattern (e.g., "may 15th", "january 5")
+        try {
+            val monthDayMatch = Regex("""(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?""", RegexOption.IGNORE_CASE).find(lowerText)
+            if (monthDayMatch != null) {
+                val monthStr = monthDayMatch.groupValues[1].lowercase()
+                val day = monthDayMatch.groupValues[2].toIntOrNull() ?: 1
+                val month = when (monthStr) {
+                    "january" -> 1; "february" -> 2; "march" -> 3; "april" -> 4
+                    "may" -> 5; "june" -> 6; "july" -> 7; "august" -> 8
+                    "september" -> 9; "october" -> 10; "november" -> 11; "december" -> 12
+                    else -> 1
+                }
+                val formatter = DateTimeFormatter.ofPattern("MMMM d", Locale.ENGLISH)
+                val parsedDate = LocalDate.parse("${monthStr.replaceFirstChar { it.uppercase() }} $day", formatter)
+                // If the date is in the past, schedule for next year
+                targetDate = if (parsedDate.isBefore(now)) {
+                    parsedDate.plusYears(1)
+                } else {
+                    parsedDate
+                }
+            }
+        } catch (e: Exception) {
+            // Fall through - keep targetDate as is
+        }
+
+        // If no date found, default to tomorrow
+        if (targetDate == null) {
+            targetDate = now.plusDays(1)
+        }
+
+        // Parse time from text
+        val timeMatch = Regex("""(\d{1,2})(?::(\d{2}))?\s*(am|pm)?""", RegexOption.IGNORE_CASE).find(lowerText)
         if (timeMatch != null) {
-            var hour = timeMatch.groupValues[1].toIntOrNull() ?: return null
+            var hour = timeMatch.groupValues[1].toIntOrNull() ?: 9
             val minute = timeMatch.groupValues[2].toIntOrNull() ?: 0
             val period = timeMatch.groupValues[3].lowercase()
-            
+
             if (period == "pm" && hour < 12) hour += 12
             if (period == "am" && hour == 12) hour = 0
-            
-            now.set(Calendar.HOUR_OF_DAY, hour)
-            now.set(Calendar.MINUTE, minute)
-            now.set(Calendar.SECOND, 0)
-            return now.timeInMillis
+
+            targetTime = LocalTime.of(hour.coerceIn(0, 23), minute.coerceIn(0, 59))
         }
-        
-        return null
+
+        // Combine date and time into ZonedDateTime and convert to epoch millis
+        val zonedDateTime = targetDate.atTime(targetTime).atZone(ZoneId.systemDefault())
+        return zonedDateTime.toInstant().toEpochMilli()
     }
 }

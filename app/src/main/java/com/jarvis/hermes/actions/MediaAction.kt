@@ -1,10 +1,14 @@
 package com.jarvis.hermes.actions
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.media.session.KeyEvent
+import android.media.session.MediaController
+import android.media.session.MediaSessionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -92,10 +96,10 @@ object MediaAction {
                 resumeMusic()
             }
             ACTION_NEXT -> {
-                mediaControl("next")
+                mediaControl(context, "next")
             }
             ACTION_PREVIOUS -> {
-                mediaControl("previous")
+                mediaControl(context, "previous")
             }
             ACTION_STOP -> {
                 stopMusic()
@@ -104,7 +108,7 @@ object MediaAction {
                 LocalResponse("Use your music app to see what's playing.", "media_now_playing")
             }
             ACTION_SHUFFLE -> {
-                mediaControl("shuffle")
+                mediaControl(context, "shuffle")
             }
             else -> LocalResponse("Unknown media action.", "media_error")
         }
@@ -154,7 +158,7 @@ object MediaAction {
 
     private fun pauseMusic(): LocalResponse {
         return try {
-            mediaControl("pause")
+            mediaControl(context, "pause")
             LocalResponse("Music paused.", "media_pause")
         } catch (e: Exception) {
             LocalResponse("Couldn't pause music.", "media_error")
@@ -163,7 +167,7 @@ object MediaAction {
 
     private fun resumeMusic(): LocalResponse {
         return try {
-            mediaControl("play")
+            mediaControl(context, "play")
             LocalResponse("Resuming music.", "media_resume")
         } catch (e: Exception) {
             LocalResponse("Couldn't resume music.", "media_error")
@@ -172,27 +176,57 @@ object MediaAction {
 
     private fun stopMusic(): LocalResponse {
         return try {
-            mediaControl("stop")
+            mediaControl(context, "stop")
             LocalResponse("Music stopped.", "media_stop")
         } catch (e: Exception) {
             LocalResponse("Couldn't stop music.", "media_error")
         }
     }
 
-    private fun mediaControl(action: String): LocalResponse {
+    private fun mediaControl(context: Context, action: String): LocalResponse {
         try {
-            val audioManager = AudioManager::class.java.getDeclaredMethod("sendAudioServiceChange")
-                ?: return LocalResponse("", "media_control")
+            val mediaSessionManager = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
+                ?: return sendMediaButtonIntent(context, action)
 
-            // Use MediaButton intent for media control
-            val intent = Intent(Intent.ACTION_MEDIA_BUTTON).apply {
-                flags = Intent.FLAG_RECEIVER_REGISTERED_ONLY
+            val controllers = mediaSessionManager.getActiveSessions(ComponentName(context, Any::class.java))
+            if (controllers.isEmpty()) {
+                return sendMediaButtonIntent(context, action)
             }
-            // Note: In production, use MediaSession to send media button events
-            // This is a simplified implementation
+
+            val controller = controllers.firstOrNull() ?: return sendMediaButtonIntent(context, action)
+
+            when (action) {
+                "pause" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_PAUSE))
+                "play" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_PLAY))
+                "next" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_NEXT))
+                "previous" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+                "stop" -> controller.dispatchMediaButtonEvent(buildMediaButtonEvent(KeyEvent.KEYCODE_MEDIA_STOP))
+                else -> return LocalResponse("", "media_control")
+            }
             return LocalResponse("", "media_control")
         } catch (e: Exception) {
-            return LocalResponse("Media control not available.", "media_error")
+            return sendMediaButtonIntent(context, action)
         }
+    }
+
+    private fun sendMediaButtonIntent(context: Context, action: String): LocalResponse {
+        val keyCode = when (action) {
+            "pause" -> KeyEvent.KEYCODE_MEDIA_PAUSE
+            "play" -> KeyEvent.KEYCODE_MEDIA_PLAY
+            "next" -> KeyEvent.KEYCODE_MEDIA_NEXT
+            "previous" -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+            "stop" -> KeyEvent.KEYCODE_MEDIA_STOP
+            else -> return LocalResponse("Media control not available.", "media_error")
+        }
+
+        val intent = Intent(Intent.ACTION_MEDIA_BUTTON)
+        intent.component = ComponentName(context, "com.android.music.MediaButtonIntentReceiver")
+        intent.putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+        context.sendOrderedBroadcast(intent, null)
+        return LocalResponse("", "media_control")
+    }
+
+    private fun buildMediaButtonEvent(keyCode: Int): KeyEvent {
+        return KeyEvent(KeyEvent.ACTION_DOWN, keyCode)
     }
 }

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.telecom.PhoneAccountHandle
@@ -110,17 +111,41 @@ object PhoneAction {
                 }
             }
             ACTION_SPEAKER_ON, ACTION_SPEAKER_OFF -> {
-                // Speaker toggle requires AudioManager - this is a best-effort
-                LocalResponse(
-                    if (action == ACTION_SPEAKER_ON) "Speaker on." else "Speaker off.",
-                    "phone_speaker"
-                )
+                // Speaker toggle requires AudioManager
+                try {
+                    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                    if (action == ACTION_SPEAKER_ON) {
+                        audioManager.setSpeakerphoneOn(true)
+                    } else {
+                        audioManager.setSpeakerphoneOn(false)
+                    }
+                    LocalResponse(
+                        if (action == ACTION_SPEAKER_ON) "Speaker on." else "Speaker off.",
+                        "phone_speaker"
+                    )
+                } catch (e: Exception) {
+                    LocalResponse("Speaker control unavailable.", "phone_error")
+                }
             }
             ACTION_MUTE -> {
-                LocalResponse("Muted.", "phone_mute")
+                try {
+                    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.isMicrophoneMute()
+                    audioManager.setMicrophoneMute(true)
+                    LocalResponse("Muted.", "phone_mute")
+                } catch (e: Exception) {
+                    LocalResponse("Mute unavailable.", "phone_error")
+                }
             }
             ACTION_UNMUTE -> {
-                LocalResponse("Unmuted.", "phone_unmute")
+                try {
+                    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.setMicrophoneMute(false)
+                    LocalResponse("Unmuted.", "phone_unmute")
+                } catch (e: Exception) {
+                    LocalResponse("Unmute unavailable.", "phone_error")
+                }
             }
             else -> LocalResponse("Unknown phone action.", "phone_error")
         }

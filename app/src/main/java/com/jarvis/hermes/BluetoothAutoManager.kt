@@ -138,6 +138,7 @@ object BluetoothAutoManager {
     private fun registerBluetoothReceiver() {
         val ctx = context ?: return
         if (bluetoothReceiver != null) return
+        if (!hasBluetoothPermission()) return
 
         bluetoothReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {

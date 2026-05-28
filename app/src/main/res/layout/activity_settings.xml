@@ -32,9 +32,9 @@
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Tailscale IP"
+            android:hint="Base URL"
             android:textColorHint="#8B949E"
-            app:helperText="e.g. 100.x.x.x (port :8642 pre-filled)"
+            app:helperText="e.g. https://openclaw.tail48466.ts.net or http://100.x.x.x:8642"
             app:helperTextTextColor="#8B949E">
 
             <com.google.android.material.textfield.TextInputEditText

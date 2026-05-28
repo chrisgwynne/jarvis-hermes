@@ -89,7 +89,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     private var ttsLocaleTag = "default"
 
     private var isDndActive = false
-    private val dndFilter = IntentFilter(NotificationManager.INTERRUPTION_FILTER_CHANGED_ACTION)
+    private val dndFilter = IntentFilter(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED)
 
     private var notificationPollJob: Job? = null
     private var callPollJob: Job? = null
@@ -103,8 +103,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         override fun onReceive(context: Context?, intent: Intent?) { checkDndState() }
     }
 
-    private fun hermesBaseUrl(): String =
-        if (hermesIp.isNotBlank()) "http://$hermesIp:8642" else ""
+    private fun hermesBaseUrl(): String = hermesIp.trimEnd('/')
 
     override fun onCreate() {
         super.onCreate()
@@ -157,7 +156,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
         hermesIp = prefs.getString("hermes_ip", "") ?: ""
         apiKey = EncryptedPrefs.get(this).getString("api_key", "") ?: ""
-        silenceDelay = prefs.getLong("silence_delay", 1500L)
+        silenceDelay = prefs.getLong("silence_delay", 800L)
         wakeWordMode = prefs.getBoolean("wake_word_mode", false)
         wakePhrase = prefs.getString("wake_phrase", "okay jarvis") ?: "okay jarvis"
         respectDnd = prefs.getBoolean("respect_dnd", true)
@@ -328,7 +327,7 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, partial)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, silenceDelay)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 300L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, silenceDelay + 200L)
         }
 
     /**
@@ -695,10 +694,11 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
                     if (!isPaused) restartListeningLoop(immediate = false)
                 }
                 override fun onError(error: String) {
+                    android.util.Log.e("HermesApi", "Stream error: $error")
                     jarvisMessages.add("[Error: $error]")
-                    speakAsync("Connection error.")
+                    speakAsync("Error: $error")
                     state = if (isPaused) State.PAUSED else State.LISTENING
-                    updateNotification("Listening…")
+                    updateNotification("Error: ${error.take(60)}")
                     if (!isPaused) restartListeningLoop(immediate = false)
                 }
                 override fun onReconnecting() {
@@ -721,7 +721,11 @@ class VoiceService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun speakAsync(text: String, queueAdd: Boolean = false) {
-        if (text.isBlank()) return
+        val cleaned = text.replace(Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "")
+                          .replace(Regex("</?think>", RegexOption.IGNORE_CASE), "")
+                          .trim()
+        if (cleaned.isBlank()) return
+        @Suppress("NAME_SHADOWING") val text = cleaned
         if (respectDnd && isDndActive) {
             vibrateOnce()
             updateNotification(text.take(40))

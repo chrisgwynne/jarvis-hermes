@@ -156,6 +156,8 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
             .put("messages", cachedMessagesJson)
             .put("stream", true)
 
+        android.util.Log.d("HermesApi", "POST $baseUrl/v1/chat/completions (attempt ${attempt + 1})")
+
         val request = Request.Builder()
             .url("$baseUrl/v1/chat/completions")
             .apply {
@@ -172,18 +174,52 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
 
         client.newCall(request).enqueue(object : Callback {
             private val textBuffer = StringBuilder()
-            private val sentenceEnd = Regex("[.!?]\\s+")
+            private val sentenceEnd = Regex("""[.!?]+\s+|[,;:]\s+(?=\w{4})""")
             private val fullText = StringBuilder()
 
+            // Suppress <think>...</think> blocks from TTS — state persists across SSE chunks.
+            // Uses a raw accumulator so partial tags that span chunk boundaries are handled.
+            private val rawAccum = StringBuilder()
+            private var thinkDepth = 0
+
+            private fun drainFiltered(): String {
+                val s = rawAccum.toString()
+                // Don't process if a tag might still be arriving (ends mid-tag)
+                val safeEnd = run {
+                    val lastOpen = s.lastIndexOf('<')
+                    if (lastOpen >= 0 && !s.substring(lastOpen).contains('>')) lastOpen
+                    else s.length
+                }
+                if (safeEnd == 0) return ""
+                val chunk = s.substring(0, safeEnd)
+                rawAccum.delete(0, safeEnd)
+
+                val out = StringBuilder()
+                var i = 0
+                while (i < chunk.length) {
+                    when {
+                        chunk.startsWith("<think>", i) -> { thinkDepth++; i += 7 }
+                        chunk.startsWith("</think>", i) -> { if (thinkDepth > 0) thinkDepth--; i += 8 }
+                        thinkDepth == 0 -> { out.append(chunk[i]); i++ }
+                        else -> i++
+                    }
+                }
+                return out.toString()
+            }
+
             override fun onFailure(call: Call, e: IOException) {
+                android.util.Log.e("HermesApi", "Request failed: ${e.javaClass.simpleName}: ${e.message}")
                 inFlight.set(false)
                 retryOrFail(e.message ?: "Connection failed", attempt, message, listener)
             }
 
             override fun onResponse(call: Call, response: Response) {
+                android.util.Log.d("HermesApi", "Response: HTTP ${response.code}")
                 try {
                     if (!response.isSuccessful) {
-                        val err = "HTTP ${response.code}"
+                        val body = try { response.peekBody(500).string() } catch (_: Exception) { "" }
+                        android.util.Log.e("HermesApi", "HTTP ${response.code}: $body")
+                        val err = "HTTP ${response.code}: $body".take(120)
                         inFlight.set(false)
                         // 4xx is unlikely to recover; don't retry.
                         if (response.code in 400..499) {
@@ -207,9 +243,14 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
                         if (!line.startsWith("data: ")) continue
                         val data = line.substring(6).trim()
                         if (data == "[DONE]") {
+                            // Flush any remaining partial content (force-drain ignoring open tags)
+                            val tail = rawAccum.toString().also { rawAccum.clear() }
+                            if (tail.isNotBlank()) {
+                                val clean = tail.replace(Regex("</?think>", RegexOption.IGNORE_CASE), "")
+                                if (clean.isNotBlank()) accumulateAndSpeak(clean, listener)
+                            }
                             if (textBuffer.isNotEmpty()) {
                                 listener.onChunk(textBuffer.toString())
-                                fullText.append(textBuffer)
                                 textBuffer.setLength(0)
                             }
                             inFlight.set(false)
@@ -217,7 +258,9 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
                             return
                         }
                         parseChunk(data)?.let { text ->
-                            if (text.isNotBlank()) accumulateAndSpeak(text, listener)
+                            rawAccum.append(text)
+                            val clean = drainFiltered()
+                            if (clean.isNotBlank()) accumulateAndSpeak(clean, listener)
                         }
                     }
                     // Stream ended without [DONE] — treat as complete.
@@ -245,6 +288,12 @@ class HermesApi(private val baseUrl: String, private val apiKey: String = "") {
                     textBuffer.delete(0, end)
                     listener.onChunk(toSpeak)
                     match = sentenceEnd.find(textBuffer.toString())
+                }
+                // Don't let the buffer grow silent — flush once it's long enough
+                // even if no punctuation has arrived yet.
+                if (textBuffer.length > 80) {
+                    listener.onChunk(textBuffer.toString())
+                    textBuffer.setLength(0)
                 }
             }
         })

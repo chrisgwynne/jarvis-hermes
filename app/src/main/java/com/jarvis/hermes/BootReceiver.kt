@@ -15,10 +15,10 @@ import com.jarvis.hermes.service.VoiceService
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val action = intent.action ?: return
-        if (action != Intent.ACTION_BOOT_COMPLETED &&
-            action != Intent.ACTION_LOCKED_BOOT_COMPLETED &&
-            action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+        val receivedAction = intent.action ?: return
+        if (receivedAction != Intent.ACTION_BOOT_COMPLETED &&
+            receivedAction != Intent.ACTION_LOCKED_BOOT_COMPLETED &&
+            receivedAction != Intent.ACTION_MY_PACKAGE_REPLACED) return
 
         val prefs = context.getSharedPreferences("jarvis_hermes", Context.MODE_PRIVATE)
         val wakeWord = prefs.getBoolean("wake_word_mode", false)

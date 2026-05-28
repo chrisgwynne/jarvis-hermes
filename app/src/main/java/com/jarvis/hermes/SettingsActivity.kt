@@ -38,7 +38,13 @@ class SettingsActivity : AppCompatActivity() {
     private fun loadSettings() {
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
         val secure = EncryptedPrefs.get(this)
-        binding.inputHermesIp.setText(prefs.getString("hermes_ip", ""))
+        val storedUrl = prefs.getString("hermes_ip", "") ?: ""
+        val displayUrl = when {
+            storedUrl.isBlank() -> ""
+            storedUrl.startsWith("http://") || storedUrl.startsWith("https://") -> storedUrl
+            else -> "https://$storedUrl"
+        }
+        binding.inputHermesIp.setText(displayUrl)
         binding.inputApiKey.setText(secure.getString("api_key", ""))
         binding.sliderSilenceDelay.value = prefs.getLong("silence_delay", 1500L).toFloat()
         binding.switchOfflineStt.isChecked = prefs.getBoolean("use_offline_stt", true)
@@ -186,20 +192,20 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
-    private fun isValidHost(host: String): Boolean {
-        if (host.isBlank()) return false
-        if (host.matches(Regex("""^(\d{1,3}\.){3}\d{1,3}$"""))) {
-            return host.split(".").all { it.toIntOrNull() in 0..255 }
-        }
-        return host.matches(Regex("""^[A-Za-z0-9][A-Za-z0-9.\-]{0,253}$"""))
+    private fun isValidBaseUrl(url: String): Boolean {
+        if (url.isBlank()) return true
+        return try {
+            val parsed = java.net.URL(url)
+            parsed.protocol in listOf("http", "https") && parsed.host.isNotBlank()
+        } catch (_: Exception) { false }
     }
 
     private fun saveSettings() {
-        val ip = binding.inputHermesIp.text.toString().trim()
-        if (!isValidHost(ip)) {
-            binding.inputHermesIp.error = "Enter an IP or hostname"
-            Toast.makeText(this, "Invalid host", Toast.LENGTH_SHORT).show()
-            return
+        val ip = binding.inputHermesIp.text.toString().trim().trimEnd('/')
+        if (!isValidBaseUrl(ip)) {
+            binding.inputHermesIp.error = "Enter a full URL, e.g. https://openclaw.tail48466.ts.net"
+            Toast.makeText(this, "Invalid URL — other settings saved", Toast.LENGTH_LONG).show()
+            // Don't return — save everything else and just skip the URL
         }
         val key = binding.inputApiKey.text.toString().trim()
         val silenceDelayVal = binding.sliderSilenceDelay.value.toLong()
@@ -213,19 +219,20 @@ class SettingsActivity : AppCompatActivity() {
         val systemPrompt = binding.inputSystemPrompt.text.toString().trim()
 
         val prefs = getSharedPreferences("jarvis_hermes", MODE_PRIVATE)
-        prefs.edit()
-            .putString("hermes_ip", ip)
-            .putLong("silence_delay", silenceDelayVal)
-            .putBoolean("use_offline_stt", useOffline)
-            .putBoolean("wake_word_mode", wakeWord)
-            .putBoolean("respect_dnd", respectDnd)
-            .putBoolean("read_notifications", readNotifications)
-            .putBoolean("bluetooth_auto_enabled", bluetoothAuto)
-            .putBoolean("call_screening_enabled", callScreening)
-            .putString("wake_phrase", wakePhraseText)
-            .putString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, systemPrompt)
-            .putString("tts_locale", selectedTtsLocaleTag())
-            .apply()
+        prefs.edit().apply {
+            if (isValidBaseUrl(ip)) putString("hermes_ip", ip)
+            putLong("silence_delay", silenceDelayVal)
+            putBoolean("use_offline_stt", useOffline)
+            putBoolean("wake_word_mode", wakeWord)
+            putBoolean("respect_dnd", respectDnd)
+            putBoolean("read_notifications", readNotifications)
+            putBoolean("bluetooth_auto_enabled", bluetoothAuto)
+            putBoolean("call_screening_enabled", callScreening)
+            putString("wake_phrase", wakePhraseText)
+            putString(SystemPromptBuilder.PREFS_KEY_SYSTEM_PROMPT, systemPrompt)
+            putString("tts_locale", selectedTtsLocaleTag())
+            apply()
+        }
 
         // Persist API key encrypted, never in plain prefs.
         EncryptedPrefs.get(this).edit().putString("api_key", key).apply()

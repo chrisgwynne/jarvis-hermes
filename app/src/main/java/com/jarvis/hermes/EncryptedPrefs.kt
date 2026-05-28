@@ -31,7 +31,7 @@ object EncryptedPrefs {
                     context.applicationContext,
                     FILE_NAME,
                     masterKey,
-                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
                 )
             } catch (e: Exception) {

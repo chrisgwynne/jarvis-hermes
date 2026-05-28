@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity() {
 
     enum class ConnectionStatus { CONNECTED, DISCONNECTED, UNKNOWN }
     private var connectionStatus = ConnectionStatus.UNKNOWN
+    private var connectionError: String? = null
 
     /**
      * Permissions we request up-front. Special permissions
@@ -103,8 +104,7 @@ class MainActivity : AppCompatActivity() {
         apiKey = EncryptedPrefs.get(this).getString("api_key", "") ?: ""
     }
 
-    private fun hermesBaseUrl(): String =
-        if (hermesIp.isNotBlank()) "http://$hermesIp:8642" else ""
+    private fun hermesBaseUrl(): String = hermesIp.trimEnd('/')
 
     private fun setupUi() {
         binding.btnStart.setOnClickListener {
@@ -152,25 +152,46 @@ class MainActivity : AppCompatActivity() {
         val url = hermesBaseUrl()
         if (url.isBlank()) {
             connectionStatus = ConnectionStatus.UNKNOWN
+            connectionError = "No server IP set — tap Settings to configure"
             updateConnectionIndicator()
             return
         }
         scope.launch {
-            val ok = withContext(Dispatchers.IO) {
+            val error = withContext(Dispatchers.IO) {
                 try {
                     val client = OkHttpClient.Builder()
                         .connectTimeout(5, TimeUnit.SECONDS)
                         .readTimeout(5, TimeUnit.SECONDS)
                         .build()
                     val request = Request.Builder()
-                        .url("$url/health")
+                        .url("$url/v1/models")
                         .apply { if (apiKey.isNotBlank()) addHeader("Authorization", "Bearer $apiKey") }
                         .get()
                         .build()
-                    client.newCall(request).execute().use { it.isSuccessful }
-                } catch (_: Exception) { false }
+                    client.newCall(request).execute().use { response ->
+                        if (response.isSuccessful) return@withContext null
+                        when (response.code) {
+                            401, 403 -> "Auth failed (HTTP ${response.code}) — check your API key"
+                            404 -> "Server reached but /v1/models not found — check the base URL"
+                            else -> "Server returned HTTP ${response.code}"
+                        }
+                    }
+                } catch (e: java.net.UnknownHostException) {
+                    "Unknown host '${e.message}' — check your IP address"
+                } catch (e: java.net.ConnectException) {
+                    "Connection refused — is the Hermes server running? (${e.message})"
+                } catch (e: java.net.SocketTimeoutException) {
+                    "Timed out — check your Tailscale connection is active"
+                } catch (e: javax.net.ssl.SSLException) {
+                    "SSL error — server is HTTP not HTTPS? (${e.message})"
+                } catch (e: IllegalArgumentException) {
+                    "Invalid URL '${hermesBaseUrl()}' — check the IP in Settings"
+                } catch (e: Exception) {
+                    "${e.javaClass.simpleName}: ${e.message}"
+                }
             }
-            connectionStatus = if (ok) ConnectionStatus.CONNECTED else ConnectionStatus.DISCONNECTED
+            connectionError = error
+            connectionStatus = if (error == null) ConnectionStatus.CONNECTED else ConnectionStatus.DISCONNECTED
             updateConnectionIndicator()
         }
     }
@@ -183,6 +204,13 @@ class MainActivity : AppCompatActivity() {
         }
         binding.connectionDot.setTextColor(android.graphics.Color.parseColor(color))
         binding.connectionDot.text = glyph
+        val err = connectionError
+        if (err != null && connectionStatus != ConnectionStatus.CONNECTED) {
+            binding.connectionErrorText.text = err
+            binding.connectionErrorText.visibility = View.VISIBLE
+        } else {
+            binding.connectionErrorText.visibility = View.GONE
+        }
     }
 
     private fun updateBatteryBanner() {

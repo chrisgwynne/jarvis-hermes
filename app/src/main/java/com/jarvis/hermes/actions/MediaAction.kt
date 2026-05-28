@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.net.Uri
+import android.provider.MediaStore
 import android.os.SystemClock
 import android.view.KeyEvent
 import com.jarvis.hermes.LocalResponse

@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    android:usesCleartextTraffic="true">
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Network -->
     <uses-permission android:name="android.permission.INTERNET"/>
@@ -122,6 +121,7 @@
         android:icon="@android:drawable/ic_btn_speak_now"
         android:label="Jarvis Hermes"
         android:theme="@style/Theme.JarvisHermes"
+        android:usesCleartextTraffic="true"
         tools:targetApi="34">
 
         <activity

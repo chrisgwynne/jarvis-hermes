@@ -74,6 +74,19 @@
         app:layout_constraintStart_toStartOf="parent"
         android:layout_marginTop="4dp"/>
 
+    <TextView
+        android:id="@+id/connectionErrorText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:textColor="#F85149"
+        android:textSize="12sp"
+        android:fontFamily="monospace"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/statusText"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="4dp"/>
+
     <Button
         android:id="@+id/btnStart"
         android:layout_width="140dp"
@@ -83,7 +96,7 @@
         android:textSize="16sp"
         android:textStyle="bold"
         android:backgroundTint="#00D4FF"
-        app:layout_constraintTop_toBottomOf="@id/statusText"
+        app:layout_constraintTop_toBottomOf="@id/connectionErrorText"
         app:layout_constraintStart_toStartOf="parent"
         android:layout_marginTop="24dp"/>
 
